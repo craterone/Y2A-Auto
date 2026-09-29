@@ -1219,20 +1219,43 @@ def tgbot_upload_token_required(f):
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return f(*args, **kwargs)
+
         config = load_config()
         if config.get('password_protection_enabled'):
             if 'logged_in' not in session:
+                # 检查是否携带有效的 Bearer Token
+                token = _extract_bearer_token()
+                if token and _verify_tgbot_api_token(token, config):
+                    return f(*args, **kwargs)
+
+                # 判断是否为 API 请求或客户端明确要求 JSON 响应
+                is_api_request = (
+                    request.path.startswith('/api/')
+                    or request.is_json
+                    or request.headers.get('Accept', '').startswith('application/json')
+                    or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+                )
+                if is_api_request:
+                    return jsonify({'success': False, 'message': '未登录或登录已过期，请先登录'}), 401
+
                 flash('请先登录以访问此页面。', 'info')
                 return redirect(url_for('login', next=request.full_path))
         return f(*args, **kwargs)
     return decorated_function
 
-# 配置CORS，允许来自YouTube的跨域请求
+# 配置CORS，允许来自YouTube及API调用的跨域请求
 CORS(app, resources={
     r"/tasks/add_via_extension": {
         "origins": [r"https?://www\.youtube\.com", r"https?://youtube\.com"],
         "methods": ["POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
+    },
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"]
     }
 })
 
@@ -3924,6 +3947,14 @@ def cookie_refresh_needed():
     except Exception as e:
         logger.error(f"处理Cookie刷新需求失败: {str(e)}")
         return jsonify({'error': '处理失败，请稍后重试'}), 500
+
+
+# ==========================================
+# 注册 RESTful API 蓝图
+# ==========================================
+from api import api_bp
+app.register_blueprint(api_bp)
+
 
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")
