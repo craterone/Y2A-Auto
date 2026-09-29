@@ -3986,6 +3986,11 @@ if __name__ == '__main__':
         api_ready, api_status = youtube_monitor.reload_api_client(config)
         if api_ready:
             youtube_monitor.start_all_schedules()
+            try:
+                from modules.playlist_monitor import playlist_monitor_manager
+                playlist_monitor_manager.start()
+            except Exception as e:
+                logger.error(f"启动 Playlist 监控调度器失败: {e}")
             if api_status == 'proxy_ready':
                 logger.info("YouTube监控系统已初始化，独立代理已启用")
             else:

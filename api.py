@@ -317,3 +317,223 @@ def api_get_task(task_id):
     except Exception as e:
         logger.error(f"API获取任务详情异常: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': f'获取任务详情失败: {str(e)}'}), 500
+
+
+# ==========================================
+# YouTube Playlist 监控 RESTful API
+# ==========================================
+
+@api_bp.route('/playlist-monitors', methods=['POST'])
+@api_login_required
+def api_create_playlist_monitor():
+    """
+    RESTful API: 创建新的 YouTube Playlist 监控
+    Body (JSON):
+    {
+        "playlist_id": "PL...",                # 必填，播放列表ID或包含list=的URL
+        "check_interval_minutes": 30,         # 可选，检测时间间隔（分钟），默认30
+        "max_concurrency": 1,                 # 可选，最大并发运行任务数，默认1
+        "upload_target": "acfun",             # 可选，投稿平台 (acfun|bilibili|both)
+        "enabled": true,                      # 可选，是否启用监控，默认true
+        "custom_title": "我的播放列表"         # 可选，自定义名称
+    }
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        data = request.get_json(silent=True) or {}
+        if not data and request.form:
+            data = request.form.to_dict()
+
+        playlist_id_input = data.get('playlist_id') or data.get('url') or ''
+        if not playlist_id_input:
+            return jsonify({'success': False, 'message': '播放列表ID或URL不能为空'}), 400
+
+        check_interval = data.get('check_interval_minutes', 30)
+        max_concurrency = data.get('max_concurrency', 1)
+        upload_target = data.get('upload_target', 'acfun')
+        enabled = data.get('enabled', True)
+        custom_title = data.get('custom_title') or data.get('title')
+
+        monitor = playlist_monitor_manager.create_monitor(
+            playlist_id_input=playlist_id_input,
+            check_interval_minutes=check_interval,
+            max_concurrency=max_concurrency,
+            upload_target=upload_target,
+            enabled=enabled,
+            custom_title=custom_title
+        )
+
+        return jsonify({
+            'success': True,
+            'message': f"成功添加播放列表监控：{monitor.get('title', '')}",
+            'monitor': monitor
+        }), 201
+
+    except ValueError as ve:
+        return jsonify({'success': False, 'message': str(ve)}), 400
+    except Exception as e:
+        logger.error(f"创建 Playlist 监控失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'创建监控失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors', methods=['GET'])
+@api_login_required
+def api_get_playlist_monitors():
+    """
+    RESTful API: 获取所有 Playlist 监控配置列表及实时任务统计
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        monitors = playlist_monitor_manager.get_monitors()
+        return jsonify({
+            'success': True,
+            'monitors': monitors,
+            'total': len(monitors)
+        }), 200
+    except Exception as e:
+        logger.error(f"获取 Playlist 监控列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'获取监控列表失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors/<int:monitor_id>', methods=['GET'])
+@api_login_required
+def api_get_playlist_monitor(monitor_id):
+    """
+    RESTful API: 获取单个 Playlist 监控配置详情
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        monitor = playlist_monitor_manager.get_monitor(monitor_id)
+        if not monitor:
+            return jsonify({'success': False, 'message': '监控配置不存在'}), 404
+        return jsonify({
+            'success': True,
+            'monitor': monitor
+        }), 200
+    except Exception as e:
+        logger.error(f"获取 Playlist 监控详情失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'获取详情失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors/<int:monitor_id>', methods=['PUT', 'PATCH'])
+@api_login_required
+def api_update_playlist_monitor(monitor_id):
+    """
+    RESTful API: 修改 Playlist 监控配置（检测周期、最大并发、启用状态等）
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        data = request.get_json(silent=True) or {}
+        if not data and request.form:
+            data = request.form.to_dict()
+
+        updated = playlist_monitor_manager.update_monitor(monitor_id, data)
+        return jsonify({
+            'success': True,
+            'message': '监控配置已更新',
+            'monitor': updated
+        }), 200
+    except ValueError as ve:
+        return jsonify({'success': False, 'message': str(ve)}), 400
+    except Exception as e:
+        logger.error(f"更新 Playlist 监控失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'更新监控配置失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors/<int:monitor_id>', methods=['DELETE'])
+@api_login_required
+def api_delete_playlist_monitor(monitor_id):
+    """
+    RESTful API: 删除 Playlist 监控配置
+    Query/Body: delete_tasks (bool, 可选，是否级联删除生成的任务)
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        delete_tasks = request.args.get('delete_tasks', '').lower() in ('1', 'true', 'yes')
+        success = playlist_monitor_manager.delete_monitor(monitor_id, delete_tasks=delete_tasks)
+        if not success:
+            return jsonify({'success': False, 'message': '监控配置不存在或已删除'}), 404
+        return jsonify({
+            'success': True,
+            'message': '监控已成功删除'
+        }), 200
+    except Exception as e:
+        logger.error(f"删除 Playlist 监控失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'删除监控失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors/<int:monitor_id>/check', methods=['POST'])
+@api_login_required
+def api_check_playlist_monitor_now(monitor_id):
+    """
+    RESTful API: 立即手动触发一次 YouTube Playlist 检测
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        res = playlist_monitor_manager.check_playlist(monitor_id, auto_add=True)
+        return jsonify(res), 200
+    except ValueError as ve:
+        return jsonify({'success': False, 'message': str(ve)}), 400
+    except Exception as e:
+        logger.error(f"即时检测 Playlist 失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'即时检测失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors/<int:monitor_id>/tasks', methods=['GET'])
+@api_login_required
+def api_get_playlist_monitor_tasks(monitor_id):
+    """
+    RESTful API: 查看该 Playlist 下的所有 Task
+    Query 参数:
+      - order: 'desc' (时间倒序，最新优先，默认) 或 'asc' (时间顺序，最早优先)
+      - page: 页码 (默认1)
+      - per_page: 每页数量 (默认20)
+      - status: 可选，按任务状态筛选 (pending, downloading, completed, failed 等)
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager
+        order = request.args.get('order', 'desc')
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        status = request.args.get('status', type=str)
+
+        result = playlist_monitor_manager.get_playlist_tasks(
+            monitor_id=monitor_id,
+            order=order,
+            status=status,
+            page=page,
+            per_page=per_page
+        )
+        return jsonify({
+            'success': True,
+            **result
+        }), 200
+    except ValueError as ve:
+        return jsonify({'success': False, 'message': str(ve)}), 404
+    except Exception as e:
+        logger.error(f"获取 Playlist 任务列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'}), 500
+
+
+@api_bp.route('/playlist-monitors/preview', methods=['POST'])
+@api_login_required
+def api_preview_playlist():
+    """
+    RESTful API: 预览 YouTube Playlist 信息（校验 ID 并获取标题和封面）
+    """
+    try:
+        from modules.playlist_monitor import playlist_monitor_manager, extract_playlist_id
+        data = request.get_json(silent=True) or {}
+        raw_input = data.get('playlist_id') or data.get('url') or ''
+        clean_id = extract_playlist_id(raw_input)
+        if not clean_id:
+            return jsonify({'success': False, 'message': '无法解析出有效的 Playlist ID'}), 400
+
+        details = playlist_monitor_manager.fetch_playlist_details(clean_id)
+        return jsonify({
+            'success': True,
+            'preview': details
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'解析失败: {str(e)}'}), 400
+

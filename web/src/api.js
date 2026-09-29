@@ -110,4 +110,92 @@ export const api = {
       method: 'GET',
     });
   },
+
+  // ==========================================
+  // Playlist 监控相关 API
+  // ==========================================
+
+  /**
+   * 获取所有 Playlist 监控配置列表
+   */
+  async getPlaylistMonitors() {
+    return request('/playlist-monitors', {
+      method: 'GET',
+    });
+  },
+
+  /**
+   * 获取单个 Playlist 监控配置详情
+   */
+  async getPlaylistMonitor(monitorId) {
+    return request(`/playlist-monitors/${monitorId}`, {
+      method: 'GET',
+    });
+  },
+
+  /**
+   * 创建 Playlist 监控
+   */
+  async createPlaylistMonitor(payload) {
+    return request('/playlist-monitors', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /**
+   * 更新 Playlist 监控配置
+   */
+  async updatePlaylistMonitor(monitorId, payload) {
+    return request(`/playlist-monitors/${monitorId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /**
+   * 删除 Playlist 监控配置
+   */
+  async deletePlaylistMonitor(monitorId, deleteTasks = false) {
+    return request(`/playlist-monitors/${monitorId}?delete_tasks=${deleteTasks}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * 立即触发一次检测
+   */
+  async checkPlaylistMonitorNow(monitorId) {
+    return request(`/playlist-monitors/${monitorId}/check`, {
+      method: 'POST',
+    });
+  },
+
+  /**
+   * 查看该 Playlist 下的所有 Task 列表
+   * @param {number} monitorId 监控ID
+   * @param {Object} options { order: 'desc' | 'asc', page, per_page, status }
+   */
+  async getPlaylistTasks(monitorId, { order = 'desc', page = 1, per_page = 20, status = '' } = {}) {
+    const params = new URLSearchParams();
+    if (order) params.set('order', order);
+    if (page) params.set('page', page);
+    if (per_page) params.set('per_page', per_page);
+    if (status) params.set('status', status);
+
+    return request(`/playlist-monitors/${monitorId}/tasks?${params.toString()}`, {
+      method: 'GET',
+    });
+  },
+
+  /**
+   * 预览 YouTube Playlist 信息
+   */
+  async previewPlaylist(playlist_id) {
+    return request('/playlist-monitors/preview', {
+      method: 'POST',
+      body: JSON.stringify({ playlist_id }),
+    });
+  },
 };
+

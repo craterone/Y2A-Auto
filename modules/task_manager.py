@@ -252,6 +252,7 @@ _TASK_CANCEL_LOCK = threading.Lock()
 _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
 _TASK_SCHEDULING_LOCK = threading.RLock()
+_PENDING_DISPATCH_MUTEX = threading.Lock()
 
 
 def get_task_cancel_event(task_id):
@@ -1310,6 +1311,27 @@ def init_db():
         # 兼容历史任务：空 upload_target 默认回填 acfun
         cursor.execute("UPDATE tasks SET upload_target = 'acfun' WHERE upload_target IS NULL OR TRIM(upload_target) = ''")
         conn.commit()
+
+        # 增加 playlist 监控相关字段
+        if 'playlist_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN playlist_id TEXT")
+            logger.info("数据库升级：添加playlist_id字段")
+            conn.commit()
+
+        if 'playlist_monitor_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN playlist_monitor_id INTEGER")
+            logger.info("数据库升级：添加playlist_monitor_id字段")
+            conn.commit()
+
+        if 'video_published_at' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN video_published_at TEXT")
+            logger.info("数据库升级：添加video_published_at字段")
+            conn.commit()
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_id ON tasks(playlist_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_monitor_id ON tasks(playlist_monitor_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_video_published_at ON tasks(video_published_at)")
+        conn.commit()
     except Exception as e:
         logger.warning(f"数据库升级检查失败（可能已是最新版本）: {e}")
     
@@ -1333,62 +1355,96 @@ def get_db_connection():
         logger.debug(f"设置SQLite连接参数失败，将使用默认参数: {e}")
     return conn
 
-def add_task(youtube_url, upload_target=None):
+_pending_check_trigger_timer = None
+_pending_check_trigger_lock = threading.Lock()
+
+def trigger_check_pending_tasks_debounced(delay_seconds=0.5):
+    """
+    防抖触发全局任务处理器的 pending 任务检查，
+    避免短时间内大量 add_task 产生并发线程同时触发调度。
+    """
+    global _pending_check_trigger_timer
+    with _pending_check_trigger_lock:
+        if _pending_check_trigger_timer is not None and _pending_check_trigger_timer.is_alive():
+            return  # 已有计时器在等待，无需重复开启新线程
+        
+        def _runner():
+            time.sleep(delay_seconds)
+            try:
+                from modules.config_manager import load_config
+                cfg = load_config()
+                processor = get_global_task_processor(cfg)
+                if processor:
+                    processor._check_and_start_next_pending_task()
+            except Exception as e:
+                logger.warning(f"防抖触发检查pending任务失败: {e}")
+
+        _pending_check_trigger_timer = threading.Thread(target=_runner, daemon=True)
+        _pending_check_trigger_timer.start()
+
+def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None):
     """
     添加新任务到数据库
     
     Args:
         youtube_url: YouTube视频URL
         upload_target: 投稿平台(acfun|bilibili|both)，为空则使用配置默认值
+        playlist_id: 可选，关联的YouTube播放列表ID
+        playlist_monitor_id: 可选，关联的播放列表监控配置ID
+        video_published_at: 可选，YouTube视频本身的发布时间 (ISO 8601 或字符串)
         
     Returns:
         task_id: 新创建的任务ID
     """
     task_id = str(uuid.uuid4())
     normalized_target = normalize_upload_target(upload_target)
-    conn = get_db_connection()
     
-    try:
-        if not upload_target:
-            try:
-                from modules.config_manager import load_config
-                cfg = load_config()
-                normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
-            except Exception:
-                normalized_target = UPLOAD_TARGET_ACFUN
-        conn.execute(
-            'INSERT INTO tasks (id, youtube_url, upload_target, status) VALUES (?, ?, ?, ?)',
-            (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'])
-        )
-        conn.commit()
-        logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}")
-        
-        # 新任务添加后，触发全局任务处理器检查是否需要启动任务
+    if not upload_target:
         try:
             from modules.config_manager import load_config
-            config = load_config()
-            processor = get_global_task_processor(config)
-            if processor:
-                # 延迟触发，确保数据库事务已提交
-                import threading
-                import time
-                
-                def delayed_trigger():
-                    time.sleep(0.5)  # 等待0.5秒确保事务提交
-                    processor._check_and_start_next_pending_task()
-                
-                threading.Thread(target=delayed_trigger, daemon=True).start()
-                logger.info(f"已触发检查pending任务: {task_id}")
+            cfg = load_config()
+            normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
+        except Exception:
+            normalized_target = UPLOAD_TARGET_ACFUN
+
+    inserted = False
+    for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
+        conn = get_db_connection()
+        try:
+            conn.execute(
+                'INSERT INTO tasks (id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, video_published_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, video_published_at)
+            )
+            conn.commit()
+            inserted = True
+            logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}, Playlist: {playlist_id}")
+            break
+        except sqlite3.OperationalError as e:
+            is_locked = 'locked' in str(e).lower()
+            if is_locked and attempt < DB_WRITE_RETRY_TIMES:
+                logger.warning(f"添加任务遇到数据库锁，将在 {DB_WRITE_RETRY_SLEEP_SECONDS * attempt}s 后重试 (第 {attempt}/{DB_WRITE_RETRY_TIMES} 次)")
+                time.sleep(DB_WRITE_RETRY_SLEEP_SECONDS * attempt)
+                continue
+            logger.error(f"添加任务失败: {str(e)}")
+            break
         except Exception as e:
-            logger.warning(f"触发任务检查失败，但任务已成功添加: {str(e)}")
-            
-    except Exception as e:
-        logger.error(f"添加任务失败: {str(e)}")
-        task_id = None
-    finally:
-        conn.close()
+            logger.error(f"添加任务失败: {str(e)}")
+            break
+        finally:
+            conn.close()
+
+    if not inserted:
+        return None
+
+    # 新任务添加后，通过防抖机制触发全局任务处理器检查
+    trigger_check_pending_tasks_debounced(delay_seconds=0.5)
     if task_id:
-        publish_task_event('task_added', {'task_id': task_id})
+        publish_task_event('task_added', {
+            'task_id': task_id, 
+            'playlist_id': playlist_id, 
+            'playlist_monitor_id': playlist_monitor_id,
+            'video_published_at': video_published_at
+        })
         emit_notification_event(
             NotificationEvent(
                 event_type=EVENT_TASK_ADDED,
@@ -1396,6 +1452,9 @@ def add_task(youtube_url, upload_target=None):
                     'task_id': task_id,
                     'youtube_url': youtube_url,
                     'upload_target': normalized_target,
+                    'playlist_id': playlist_id,
+                    'playlist_monitor_id': playlist_monitor_id,
+                    'video_published_at': video_published_at,
                 },
             )
         )
@@ -2325,6 +2384,55 @@ class TaskProcessor:
                     logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能调度")
                     return None
 
+                # 严格检查任务所属 Playlist 的最大并发限制
+                p_mon_id = task.get('playlist_monitor_id')
+                p_id = task.get('playlist_id')
+                if p_mon_id or p_id:
+                    try:
+                        from modules.playlist_monitor import get_playlist_max_concurrency
+                        p_max = get_playlist_max_concurrency(p_mon_id, p_id)
+                    except Exception:
+                        p_max = 1
+
+                    # 统计该 playlist 当前运行中与活动线程中的任务数（排除当前 task_id 本身）
+                    cur_p_running = 0
+                    current_active_ids = set(_get_active_task_ids())
+                    for act_id in current_active_ids:
+                        if act_id == task_id:
+                            continue
+                        act_task = get_task(act_id)
+                        if act_task:
+                            if p_mon_id and act_task.get('playlist_monitor_id') == p_mon_id:
+                                cur_p_running += 1
+                            elif p_id and act_task.get('playlist_id') == p_id:
+                                cur_p_running += 1
+
+                    # 检查数据库中状态非 pending/非 failed/非 completed/非 cancelled 的任务
+                    conn = get_db_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute('''
+                            SELECT id, playlist_monitor_id, playlist_id FROM tasks 
+                            WHERE status NOT IN ('pending', 'completed', 'failed', 'cancelled')
+                              AND id != ?
+                        ''', (task_id,))
+                        for row in cur.fetchall():
+                            r_id, r_mon_id, r_pid = row[0], row[1], row[2]
+                            if r_id in current_active_ids:
+                                continue
+                            if p_mon_id and r_mon_id == p_mon_id:
+                                cur_p_running += 1
+                            elif p_id and r_pid == p_id:
+                                cur_p_running += 1
+                    finally:
+                        conn.close()
+
+                    if cur_p_running >= p_max:
+                        logger.info(
+                            f"任务 {task_id[:8]} 所属 Playlist 当前运行数 {cur_p_running} 已达到配置最大并发 {p_max}，暂不调度启动"
+                        )
+                        return None
+
                 global task_semaphore
                 if task_semaphore is None:
                     init_task_semaphore(self._current_max_concurrent_tasks)
@@ -2670,6 +2778,10 @@ class TaskProcessor:
     
     def _check_and_start_next_pending_task(self):
         """检查并启动下一个pending任务"""
+        if not _PENDING_DISPATCH_MUTEX.acquire(blocking=False):
+            logger.debug("已有调度线程正在检查 pending 队列，跳过重复触发")
+            return
+
         try:
             self._refresh_runtime_limits(force=False)
             # 获取所有pending任务
@@ -2724,7 +2836,58 @@ class TaskProcessor:
             
             # 按创建时间排序，启动最早的pending任务
             pending_tasks.sort(key=lambda x: x['created_at'])
-            next_task = pending_tasks[0]
+
+            # 统计各 Playlist 当前正在运行中的任务数量
+            # 必须综合 DB 运行中任务与活跃线程集合 active_task_ids 中的任务
+            all_running_tasks = list(running_tasks)
+            known_task_ids = {t.get('id') for t in running_tasks if t.get('id')}
+            missing_active_ids = set(active_task_ids) - known_task_ids
+            for mid in missing_active_ids:
+                m_task = get_task(mid)
+                if m_task:
+                    all_running_tasks.append(m_task)
+
+            playlist_running_counts = {}
+            for r_task in all_running_tasks:
+                p_mon_id = r_task.get('playlist_monitor_id')
+                p_id = r_task.get('playlist_id')
+                if p_mon_id:
+                    playlist_running_counts[f"mon_{p_mon_id}"] = playlist_running_counts.get(f"mon_{p_mon_id}", 0) + 1
+                if p_id:
+                    playlist_running_counts[f"pid_{p_id}"] = playlist_running_counts.get(f"pid_{p_id}", 0) + 1
+
+            next_task = None
+            for cand_task in pending_tasks:
+                cand_mon_id = cand_task.get('playlist_monitor_id')
+                cand_pid = cand_task.get('playlist_id')
+                
+                # 检查该任务所属的 Playlist 是否达到最大并发限制
+                if cand_mon_id or cand_pid:
+                    try:
+                        from modules.playlist_monitor import get_playlist_max_concurrency
+                        p_max_concurrency = get_playlist_max_concurrency(cand_mon_id, cand_pid)
+                    except Exception:
+                        p_max_concurrency = 1
+
+                    cur_running = 0
+                    if cand_mon_id:
+                        cur_running = max(cur_running, playlist_running_counts.get(f"mon_{cand_mon_id}", 0))
+                    if cand_pid:
+                        cur_running = max(cur_running, playlist_running_counts.get(f"pid_{cand_pid}", 0))
+                    
+                    if cur_running >= p_max_concurrency:
+                        logger.info(
+                            f"任务 {cand_task['id'][:8]} 所属播放列表 ({cand_mon_id or cand_pid}) "
+                            f"当前运行中任务数 {cur_running} 已达最大并发限制 {p_max_concurrency}，等待其已有任务完成"
+                        )
+                        continue
+
+                next_task = cand_task
+                break
+
+            if not next_task:
+                logger.info("当前所有 pending 任务均处于所属 Playlist 最大并发限制中，暂无任务启动")
+                return
             
             logger.info(f"发现pending任务，准备启动: {next_task['id'][:8]}... ({next_task.get('youtube_url', 'Unknown URL')[-30:]})")
             
@@ -2737,6 +2900,8 @@ class TaskProcessor:
                 
         except Exception as e:
             logger.error(f"检查和启动下一个pending任务时出错: {str(e)}")
+        finally:
+            _PENDING_DISPATCH_MUTEX.release()
     
     def _fetch_video_info(self, task_id, youtube_url, task_logger):
         """只采集视频元数据和封面，不下载视频文件"""

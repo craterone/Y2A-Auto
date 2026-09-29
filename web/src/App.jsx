@@ -4,6 +4,9 @@ import { Navbar } from './components/Navbar';
 import { LoginForm } from './components/LoginForm';
 import { CreateTaskCard } from './components/CreateTaskCard';
 import { TaskList } from './components/TaskList';
+import { PlaylistMonitorCard } from './components/PlaylistMonitorCard';
+import { PlaylistMonitorList } from './components/PlaylistMonitorList';
+import { PlaylistTasksModal } from './components/PlaylistTasksModal';
 import { Toast } from './components/Toast';
 
 export function App() {
@@ -13,11 +16,20 @@ export function App() {
     checked: false,
   });
 
+  const [activeTab, setActiveTab] = useState('tasks'); // 'tasks' | 'playlist'
   const [showLoginModal, setShowLoginModal] = useState(false);
+  
+  // 单视频任务状态
   const [tasks, setTasks] = useState([]);
   const [totalTasks, setTotalTasks] = useState(0);
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Playlist 监控状态
+  const [monitors, setMonitors] = useState([]);
+  const [loadingMonitors, setLoadingMonitors] = useState(false);
+  const [activePlaylistForTasks, setActivePlaylistForTasks] = useState(null);
+
   const [toasts, setToasts] = useState([]);
 
   // Toast 调度
@@ -72,23 +84,47 @@ export function App() {
     }
   }, [showToast]);
 
+  // 拉取 Playlist 监控配置列表
+  const fetchMonitors = useCallback(async (silent = false) => {
+    if (!silent) setLoadingMonitors(true);
+    try {
+      const data = await api.getPlaylistMonitors();
+      if (data.success) {
+        setMonitors(data.monitors || []);
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        setAuthState((prev) => ({ ...prev, loggedIn: false }));
+      } else if (!silent) {
+        showToast(err.message, 'error');
+      }
+    } finally {
+      if (!silent) setLoadingMonitors(false);
+    }
+  }, [showToast]);
+
   // 初始化
   useEffect(() => {
     checkAuth().then((auth) => {
       if (auth && auth.logged_in) {
         fetchTasks();
+        fetchMonitors();
       }
     });
-  }, [checkAuth, fetchTasks]);
+  }, [checkAuth, fetchTasks, fetchMonitors]);
 
-  // 轮询近期任务状态
+  // 轮询近期数据
   useEffect(() => {
     if (!authState.loggedIn) return;
     const timer = setInterval(() => {
-      fetchTasks(true);
+      if (activeTab === 'tasks') {
+        fetchTasks(true);
+      } else if (activeTab === 'playlist') {
+        fetchMonitors(true);
+      }
     }, 8000);
     return () => clearInterval(timer);
-  }, [authState.loggedIn, fetchTasks]);
+  }, [authState.loggedIn, activeTab, fetchTasks, fetchMonitors]);
 
   // 登录动作
   const handleLogin = async (password) => {
@@ -98,6 +134,7 @@ export function App() {
       setShowLoginModal(false);
       showToast('登录成功，欢迎使用 Y2A-Auto！', 'success');
       fetchTasks();
+      fetchMonitors();
     }
   };
 
@@ -108,13 +145,14 @@ export function App() {
       setAuthState((prev) => ({ ...prev, loggedIn: false }));
       setTasks([]);
       setTotalTasks(0);
+      setMonitors([]);
       showToast('已安全退出登录', 'info');
     } catch (err) {
       showToast(err.message, 'error');
     }
   };
 
-  // 创建任务
+  // 创建单任务
   const handleTaskCreated = async (taskPayload) => {
     const res = await api.createTask(taskPayload);
     if (res.success) {
@@ -122,6 +160,11 @@ export function App() {
       fetchTasks(true);
     }
     return res;
+  };
+
+  // 新建 Playlist 监控回调
+  const handleMonitorCreated = () => {
+    fetchMonitors(false);
   };
 
   // 首屏加载中
@@ -151,6 +194,12 @@ export function App() {
         authState={authState}
         onLogout={handleLogout}
         onOpenLogin={() => setShowLoginModal(true)}
+        activeTab={activeTab}
+        onTabChange={(tab) => {
+          setActiveTab(tab);
+          if (tab === 'tasks') fetchTasks();
+          if (tab === 'playlist') fetchMonitors();
+        }}
       />
 
       <main className="main-content">
@@ -158,7 +207,7 @@ export function App() {
           <div style={{ marginTop: '40px' }}>
             <LoginForm onLoginSuccess={handleLogin} />
           </div>
-        ) : (
+        ) : activeTab === 'tasks' ? (
           <div className="grid-layout">
             <CreateTaskCard
               onTaskCreated={handleTaskCreated}
@@ -172,8 +221,31 @@ export function App() {
               onRefresh={() => fetchTasks(false)}
             />
           </div>
+        ) : (
+          <div style={{ maxWidth: '1080px', margin: '0 auto' }}>
+            <PlaylistMonitorCard
+              onMonitorCreated={handleMonitorCreated}
+              showToast={showToast}
+            />
+            <PlaylistMonitorList
+              monitors={monitors}
+              isLoading={loadingMonitors}
+              onRefresh={() => fetchMonitors(false)}
+              onViewTasks={(m) => setActivePlaylistForTasks(m)}
+              showToast={showToast}
+            />
+          </div>
         )}
       </main>
+
+      {/* 查看该 Playlist 所有 Task 的模态框（支持时间倒序或顺序查看） */}
+      {activePlaylistForTasks && (
+        <PlaylistTasksModal
+          monitor={activePlaylistForTasks}
+          onClose={() => setActivePlaylistForTasks(null)}
+          showToast={showToast}
+        />
+      )}
 
       {/* 模态框登录 */}
       {showLoginModal && (
