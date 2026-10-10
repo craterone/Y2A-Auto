@@ -42,7 +42,7 @@ jobs:
         id: meta-ghcr
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY_GHCR }}/fqscfqj/y2a-auto
+          images: ${{ env.REGISTRY_GHCR }}/craterone/y2a-auto
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
