@@ -1048,7 +1048,10 @@ def init_db():
         acfun_upload_response TEXT,
         bilibili_upload_response TEXT,
         asr_warning_message TEXT,  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
-        subtitle_warning_message TEXT  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        subtitle_warning_message TEXT,  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        bilibili_season_id INTEGER,  -- Bilibili 合集 ID
+        bilibili_section_id INTEGER,  -- Bilibili 合集小节 ID
+        bilibili_season_title TEXT  -- Bilibili 合集标题
     )
     ''')
     
@@ -1338,6 +1341,21 @@ def init_db():
             logger.info("数据库升级：添加auto_upload字段")
             conn.commit()
 
+        if 'bilibili_season_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_season_id INTEGER")
+            logger.info("数据库升级：添加bilibili_season_id字段")
+            conn.commit()
+
+        if 'bilibili_section_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_section_id INTEGER")
+            logger.info("数据库升级：添加bilibili_section_id字段")
+            conn.commit()
+
+        if 'bilibili_season_title' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_season_title TEXT")
+            logger.info("数据库升级：添加bilibili_season_title字段")
+            conn.commit()
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_id ON tasks(playlist_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_monitor_id ON tasks(playlist_monitor_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_video_published_at ON tasks(video_published_at)")
@@ -1392,7 +1410,7 @@ def trigger_check_pending_tasks_debounced(delay_seconds=0.5):
         _pending_check_trigger_timer = threading.Thread(target=_runner, daemon=True)
         _pending_check_trigger_timer.start()
 
-def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True):
+def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True, bilibili_season_id=None, bilibili_section_id=None, bilibili_season_title=None):
     """
     添加新任务到数据库
     
@@ -1404,6 +1422,9 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
         video_published_at: 可选，YouTube视频本身的发布时间 (ISO 8601 或字符串)
         custom_description: 可选，所属 Playlist 统一配置的投稿简介
         auto_upload: 可选，是否自动投稿，默认 True
+        bilibili_season_id: 可选，B站合集 ID
+        bilibili_section_id: 可选，B站合集小节 ID
+        bilibili_season_title: 可选，B站合集标题
         
     Returns:
         task_id: 新创建的任务ID
@@ -1422,6 +1443,9 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
     # 如果有统一投稿简介，同时作为初始 translated 简介
     initial_desc_trans = custom_description if (custom_description and str(custom_description).strip()) else None
     au_val = 1 if auto_upload else 0
+    safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
+    safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
+    safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
 
     inserted = False
     for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
@@ -1430,10 +1454,12 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
             conn.execute(
                 '''INSERT INTO tasks (
                     id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, 
-                    video_published_at, custom_description, auto_upload, description_translated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    video_published_at, custom_description, auto_upload, description_translated,
+                    bilibili_season_id, bilibili_section_id, bilibili_season_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, 
-                 video_published_at, custom_description, au_val, initial_desc_trans)
+                 video_published_at, custom_description, au_val, initial_desc_trans,
+                 safe_season_id, safe_section_id, safe_season_title)
             )
             conn.commit()
             inserted = True
@@ -1545,6 +1571,9 @@ def update_task(task_id, silent=False, **kwargs):
         'video_published_at': 'video_published_at = ?',
         'custom_description': 'custom_description = ?',
         'auto_upload': 'auto_upload = ?',
+        'bilibili_season_id': 'bilibili_season_id = ?',
+        'bilibili_section_id': 'bilibili_section_id = ?',
+        'bilibili_season_title': 'bilibili_season_title = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -8546,6 +8575,30 @@ class TaskProcessor:
                     bilibili_upload_response=json.dumps(result, ensure_ascii=False),
                     upload_progress=None
                 )
+
+                # 如果配置了 Bilibili 合集，尝试将视频加入指定合集
+                season_id = task.get('bilibili_season_id')
+                section_id = task.get('bilibili_section_id')
+                if season_id:
+                    try:
+                        from modules.bilibili_season import add_video_to_season
+                        bvid = result.get('bvid') if isinstance(result, dict) else None
+                        aid = result.get('aid') if isinstance(result, dict) else None
+                        add_ok, add_msg = add_video_to_season(
+                            season_id=int(season_id),
+                            aid=aid,
+                            bvid=bvid,
+                            title=title,
+                            section_id=int(section_id) if section_id else None,
+                            cookie_file=bilibili_cookies_path
+                        )
+                        if add_ok:
+                            task_logger.info(f"视频 ({bvid or aid}) 已成功加入 Bilibili 合集 (ID: {season_id})")
+                        else:
+                            task_logger.warning(f"视频加入 Bilibili 合集未成功: {add_msg}")
+                    except Exception as s_exc:
+                        task_logger.warning(f"添加视频到合集发生异常（不影响视频上传成功）: {s_exc}")
+
                 # 上传到 B 站成功后立即删除本地文件，腾出磁盘空间，
                 # 避免大视频（如 CS2 比赛直播流，单条可达十余 GB）长期占用磁盘，
                 # 导致后续任务因「No space left on device」而失败。

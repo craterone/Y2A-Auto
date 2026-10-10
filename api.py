@@ -215,6 +215,10 @@ def api_add_task():
         else:
             should_start = bool(config.get('AUTO_MODE_ENABLED', False))
 
+        bilibili_season_id = data.get('bilibili_season_id')
+        bilibili_section_id = data.get('bilibili_section_id')
+        bilibili_season_title = data.get('bilibili_season_title')
+
         # 判断是否为播放列表URL
         if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
             cookies_path = web_app.resolve_cookie_file_path(config.get('YOUTUBE_COOKIES_PATH'), 'youtube')
@@ -225,7 +229,13 @@ def api_add_task():
             added_count = 0
             task_ids = []
             for url in video_urls:
-                task_id = web_app.add_task(url, upload_target=upload_target)
+                task_id = web_app.add_task(
+                    url,
+                    upload_target=upload_target,
+                    bilibili_season_id=bilibili_season_id,
+                    bilibili_section_id=bilibili_section_id,
+                    bilibili_season_title=bilibili_season_title,
+                )
                 if task_id:
                     added_count += 1
                     task_ids.append(task_id)
@@ -243,7 +253,13 @@ def api_add_task():
             }), 201
 
         # 单个视频
-        task_id = web_app.add_task(youtube_url, upload_target=upload_target)
+        task_id = web_app.add_task(
+            youtube_url,
+            upload_target=upload_target,
+            bilibili_season_id=bilibili_season_id,
+            bilibili_section_id=bilibili_section_id,
+            bilibili_season_title=bilibili_season_title,
+        )
         if task_id:
             if should_start:
                 logger.info(f"API添加任务并立即启动处理: {task_id}")
@@ -356,6 +372,9 @@ def api_create_playlist_monitor():
         custom_title = data.get('custom_title') or data.get('title')
         auto_upload = data.get('auto_upload', True)
         custom_description = data.get('custom_description', '')
+        bilibili_season_id = data.get('bilibili_season_id')
+        bilibili_section_id = data.get('bilibili_section_id')
+        bilibili_season_title = data.get('bilibili_season_title')
 
         monitor = playlist_monitor_manager.create_monitor(
             playlist_id_input=playlist_id_input,
@@ -365,7 +384,10 @@ def api_create_playlist_monitor():
             enabled=enabled,
             custom_title=custom_title,
             auto_upload=bool(auto_upload),
-            custom_description=str(custom_description or '').strip()
+            custom_description=str(custom_description or '').strip(),
+            bilibili_season_id=bilibili_season_id,
+            bilibili_section_id=bilibili_section_id,
+            bilibili_season_title=bilibili_season_title,
         )
 
         return jsonify({
@@ -541,4 +563,48 @@ def api_preview_playlist():
         }), 200
     except Exception as e:
         return jsonify({'success': False, 'message': f'解析失败: {str(e)}'}), 400
+
+
+# ==========================================
+# Bilibili 业务扩展 RESTful API
+# ==========================================
+
+@api_bp.route('/bilibili/seasons', methods=['GET'])
+@api_login_required
+def api_get_bilibili_seasons():
+    """
+    RESTful API: 获取当前登录 UP 主的 Bilibili 稿件合集列表
+    Query 参数:
+        refresh: 可选，'true' / '1' 强制跳过缓存刷新
+    """
+    try:
+        from modules.bilibili_season import get_user_seasons
+        web_app = _get_app_module()
+        config = web_app.load_config()
+        cookie_file = web_app.resolve_cookie_file_path(config.get('BILIBILI_COOKIES_PATH'), 'bilibili')
+
+        refresh = request.args.get('refresh', '').lower() in ('true', '1', 'yes')
+        seasons = get_user_seasons(cookie_file=cookie_file, force_refresh=refresh)
+        return jsonify({
+            'success': True,
+            'seasons': seasons,
+            'count': len(seasons)
+        }), 200
+    except FileNotFoundError:
+        return jsonify({
+            'success': False,
+            'message': '未找到 Bilibili Cookie 文件，请在系统设置中登录 Bilibili'
+        }), 404
+    except ValueError as ve:
+        return jsonify({
+            'success': False,
+            'message': str(ve)
+        }), 400
+    except Exception as e:
+        logger.error(f"获取 Bilibili 合集失败: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f"获取合集失败: {str(e)}"
+        }), 500
+
 

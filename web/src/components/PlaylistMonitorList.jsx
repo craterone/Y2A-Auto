@@ -212,6 +212,11 @@ export function PlaylistMonitorList({
                         {m.auto_upload !== false && m.auto_upload !== 0 ? '🚀 自动投稿' : '⏸ 手动发布'}
                       </span>
                       <span>已探测总视频: <strong>{m.total_videos_found || 0}</strong></span>
+                      {Boolean(m.bilibili_season_title) && (
+                        <span className="badge" style={{ background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.3)', fontSize: '0.68rem', padding: '2px 6px' }}>
+                          📚 合集: {m.bilibili_season_title}
+                        </span>
+                      )}
                     </div>
 
                     {Boolean(m.custom_description) && (

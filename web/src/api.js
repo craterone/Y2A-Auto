@@ -82,14 +82,26 @@ export const api = {
   /**
    * 添加新任务（单个视频或播放列表）
    */
-  async createTask({ youtube_url, upload_target = 'acfun', auto_start = true }) {
+  async createTask({
+    youtube_url,
+    upload_target = 'acfun',
+    auto_start = true,
+    bilibili_season_id,
+    bilibili_section_id,
+    bilibili_season_title,
+  }) {
+    const payload = {
+      youtube_url,
+      upload_target,
+      auto_start,
+    };
+    if (bilibili_season_id) payload.bilibili_season_id = bilibili_season_id;
+    if (bilibili_section_id) payload.bilibili_section_id = bilibili_section_id;
+    if (bilibili_season_title) payload.bilibili_season_title = bilibili_season_title;
+
     return request('/tasks', {
       method: 'POST',
-      body: JSON.stringify({
-        youtube_url,
-        upload_target,
-        auto_start,
-      }),
+      body: JSON.stringify(payload),
     });
   },
 
@@ -197,5 +209,36 @@ export const api = {
       body: JSON.stringify({ playlist_id }),
     });
   },
+
+  /**
+   * 获取当前用户已创建的 Bilibili 合集列表（内置前端内存缓存与并发去重）
+   * @param {boolean} refresh 是否强制跳过缓存刷新
+   */
+  async getBilibiliSeasons(refresh = false) {
+    if (!refresh && window._bilibiliSeasonsCache) {
+      return window._bilibiliSeasonsCache;
+    }
+    if (window._bilibiliSeasonsPromise) {
+      return window._bilibiliSeasonsPromise;
+    }
+    const query = refresh ? '?refresh=true' : '';
+    window._bilibiliSeasonsPromise = request(`/bilibili/seasons${query}`, {
+      method: 'GET',
+    })
+      .then((res) => {
+        if (res && res.success) {
+          window._bilibiliSeasonsCache = res;
+        }
+        window._bilibiliSeasonsPromise = null;
+        return res;
+      })
+      .catch((err) => {
+        window._bilibiliSeasonsPromise = null;
+        throw err;
+      });
+
+    return window._bilibiliSeasonsPromise;
+  },
 };
+
 

@@ -76,6 +76,9 @@ class PlaylistMonitorManager:
                     upload_target TEXT DEFAULT 'bilibili',
                     auto_upload BOOLEAN DEFAULT 1,
                     custom_description TEXT,
+                    bilibili_season_id INTEGER,
+                    bilibili_section_id INTEGER,
+                    bilibili_season_title TEXT,
                     enabled BOOLEAN DEFAULT 1,
                     last_checked_at TIMESTAMP,
                     last_check_status TEXT,
@@ -111,6 +114,15 @@ class PlaylistMonitorManager:
             if 'custom_description' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN custom_description TEXT")
                 logger.info("数据库升级：playlist_monitors 添加 custom_description 字段")
+            if 'bilibili_season_id' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN bilibili_season_id INTEGER")
+                logger.info("数据库升级：playlist_monitors 添加 bilibili_season_id 字段")
+            if 'bilibili_section_id' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN bilibili_section_id INTEGER")
+                logger.info("数据库升级：playlist_monitors 添加 bilibili_section_id 字段")
+            if 'bilibili_season_title' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN bilibili_season_title TEXT")
+                logger.info("数据库升级：playlist_monitors 添加 bilibili_season_title 字段")
             cursor.execute("UPDATE playlist_monitors SET upload_target = 'bilibili' WHERE upload_target = 'acfun' OR upload_target IS NULL")
 
             conn.commit()
@@ -177,7 +189,10 @@ class PlaylistMonitorManager:
         enabled: bool = True,
         custom_title: Optional[str] = None,
         auto_upload: bool = True,
-        custom_description: Optional[str] = None
+        custom_description: Optional[str] = None,
+        bilibili_season_id: Optional[int] = None,
+        bilibili_section_id: Optional[int] = None,
+        bilibili_season_title: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         创建新的 Playlist 监控
@@ -217,6 +232,9 @@ class PlaylistMonitorManager:
         target = 'bilibili'
         is_auto_upload = 1 if auto_upload else 0
         clean_custom_desc = (custom_description or '').strip()
+        safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
+        safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
+        safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
 
         conn = get_db_connection()
         try:
@@ -225,11 +243,12 @@ class PlaylistMonitorManager:
                 INSERT INTO playlist_monitors (
                     playlist_id, title, description, channel_title, thumbnail_url,
                     check_interval_minutes, max_concurrency, upload_target, enabled,
-                    auto_upload, custom_description
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    auto_upload, custom_description, bilibili_season_id, bilibili_section_id,
+                    bilibili_season_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (clean_playlist_id, title, description, channel_title, thumbnail_url,
                   interval, concurrency, target, 1 if enabled else 0,
-                  is_auto_upload, clean_custom_desc))
+                  is_auto_upload, clean_custom_desc, safe_season_id, safe_section_id, safe_season_title))
             monitor_id = cursor.lastrowid
             conn.commit()
         finally:
@@ -336,6 +355,21 @@ class PlaylistMonitorManager:
             c_desc = str(update_data['custom_description'] or '').strip()
             fields.append('custom_description = ?')
             params.append(c_desc)
+
+        if 'bilibili_season_id' in update_data:
+            fields.append('bilibili_season_id = ?')
+            val = update_data['bilibili_season_id']
+            params.append(int(val) if val else None)
+
+        if 'bilibili_section_id' in update_data:
+            fields.append('bilibili_section_id = ?')
+            val = update_data['bilibili_section_id']
+            params.append(int(val) if val else None)
+
+        if 'bilibili_season_title' in update_data:
+            fields.append('bilibili_season_title = ?')
+            val = str(update_data['bilibili_season_title'] or '').strip()
+            params.append(val if val else None)
 
         # 投稿目标强制保持并默认固定为 bilibili
         fields.append('upload_target = ?')
@@ -520,7 +554,10 @@ class PlaylistMonitorManager:
                         playlist_monitor_id=monitor_id,
                         video_published_at=v['published_at'],
                         custom_description=custom_description,
-                        auto_upload=auto_upload
+                        auto_upload=auto_upload,
+                        bilibili_season_id=monitor.get('bilibili_season_id'),
+                        bilibili_section_id=monitor.get('bilibili_section_id'),
+                        bilibili_season_title=monitor.get('bilibili_season_title'),
                     )
                     if task_id:
                         history_records.append((monitor_id, v['video_id'], v['title'], v['published_at'], task_id))

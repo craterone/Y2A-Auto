@@ -125,7 +125,16 @@ export function TaskList({ tasks, total, loading, onRefresh }) {
               {tasks.map((task) => (
                 <tr key={task.id}>
                   <td>{getStatusBadge(task.status)}</td>
-                  <td>{getPlatformBadge(task.upload_target)}</td>
+                  <td>
+                    {getPlatformBadge(task.upload_target)}
+                    {task.bilibili_season_title && (
+                      <div style={{ marginTop: '4px' }}>
+                        <span className="badge" style={{ background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.3)', fontSize: '0.68rem', padding: '1px 5px', display: 'inline-block' }}>
+                          📚 {task.bilibili_season_title}
+                        </span>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <div style={{ maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       <span style={{ fontWeight: 500, color: 'var(--text-main)' }}>

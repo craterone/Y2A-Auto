@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api';
 
 export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
@@ -9,9 +9,37 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [customDescription, setCustomDescription] = useState('');
   const [customTitle, setCustomTitle] = useState('');
   
+  // Bilibili 合集状态
+  const [seasons, setSeasons] = useState([]);
+  const [loadingSeasons, setLoadingSeasons] = useState(false);
+  const [selectedSeasonId, setSelectedSeasonId] = useState('');
+  const hasFetchedRef = useRef(false);
+
   const [previewData, setPreviewData] = useState(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 加载用户已创建的合集列表
+  const loadSeasons = useCallback(async (forceRefresh = false) => {
+    setLoadingSeasons(true);
+    try {
+      const res = await api.getBilibiliSeasons(forceRefresh);
+      if (res.success && Array.isArray(res.seasons)) {
+        setSeasons(res.seasons);
+      }
+    } catch {
+      // 忽略未登录等非阻断错误
+    } finally {
+      setLoadingSeasons(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true;
+      loadSeasons(false);
+    }
+  }, [loadSeasons]);
 
   // 尝试自动提取播放列表ID
   const handleInputChange = (e) => {
@@ -65,6 +93,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
 
     setIsSubmitting(true);
     try {
+      const matchedSeason = seasons.find((s) => String(s.season_id) === String(selectedSeasonId));
+      const firstSection = matchedSeason?.sections?.[0];
+
       const res = await api.createPlaylistMonitor({
         playlist_id: playlistId.trim(),
         check_interval_minutes: interval,
@@ -74,6 +105,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         custom_description: customDescription.trim(),
         enabled: true,
         custom_title: customTitle.trim() || undefined,
+        bilibili_season_id: matchedSeason ? matchedSeason.season_id : undefined,
+        bilibili_section_id: firstSection ? firstSection.section_id : undefined,
+        bilibili_season_title: matchedSeason ? matchedSeason.title : undefined,
       });
 
       if (res.success) {
@@ -82,6 +116,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         setCustomTitle('');
         setCustomDescription('');
         setAutoUpload(true);
+        setSelectedSeasonId('');
         setPreviewData(null);
         setCheckInterval(30);
         setMaxConcurrency(1);
@@ -286,6 +321,51 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
           </label>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginLeft: '26px', marginTop: '4px', display: 'block' }}>
             开启后，检测到的新视频将在前置处理完成后自动提交投稿至 Bilibili；若关闭，视频处理完毕后将停留在“准备上传”状态待人工确认发布。
+          </span>
+        </div>
+
+        {/* 关联 Bilibili 合集配置 */}
+        <div className="form-group" style={{
+          marginBottom: '16px',
+          background: 'rgba(56, 189, 248, 0.04)',
+          border: '1px solid rgba(56, 189, 248, 0.2)',
+          padding: '14px 16px',
+          borderRadius: '8px',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 500, margin: 0 }}>
+              <span>📚</span> 绑定 Bilibili 投稿合集（可选）
+            </label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => loadSeasons(true)}
+              disabled={loadingSeasons || isSubmitting}
+              style={{ padding: '2px 8px', fontSize: '0.75rem', height: '26px' }}
+              title="重新向 B 站拉取最新合集列表"
+            >
+              {loadingSeasons ? '加载中...' : '🔄 刷新合集'}
+            </button>
+          </div>
+
+          <select
+            className="input-field"
+            value={selectedSeasonId}
+            onChange={(e) => setSelectedSeasonId(e.target.value)}
+            disabled={isSubmitting || loadingSeasons}
+            style={{ width: '100%', background: 'rgba(15, 23, 42, 0.6)' }}
+          >
+            <option value="">不加入合集（普通独立投稿）</option>
+            {seasons.map((s) => (
+              <option key={s.season_id} value={s.season_id}>
+                {s.title} {s.ep_num !== undefined ? `(已收录 ${s.ep_num} 话)` : ''}
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '6px', display: 'block' }}>
+            {selectedSeasonId
+              ? '✨ 绑定后，该播放列表监控自动拉取并发布的所有视频，都将归入此合集中！'
+              : '选择合集后，监控自动发布的视频将自动收录入该合集；未配置则作为独立视频发布。'}
           </span>
         </div>
 
