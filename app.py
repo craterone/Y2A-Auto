@@ -4039,8 +4039,18 @@ if __name__ == '__main__':
     # 设置下载内容清理定时任务
     download_cleanup_scheduler = schedule_download_cleanup()
 
+    # 解析命令行端口参数
+    import argparse
+    parser = argparse.ArgumentParser(description="Y2A-Auto Web Server")
+    parser.add_argument('-p', '--port', type=int, default=None, help="服务监听端口（默认环境变量 PORT 或 5000）")
+    parser.add_argument('positional_port', nargs='?', type=int, default=None, help="服务监听端口（位置参数，如 python app.py 5002）")
+    args, _ = parser.parse_known_args()
+
+    default_port = int(os.environ.get('PORT', 5000))
+    server_port = args.port or args.positional_port or default_port
+
     try:
-        port = int(os.environ.get('PORT', 5000))
+        port = server_port
         logger.info(f"服务启动，监听地址: http://127.0.0.1:{port}")
         # 使用标准Flask运行
         app.run(host='0.0.0.0', port=port, debug=False)
