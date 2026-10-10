@@ -5,7 +5,8 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [playlistId, setPlaylistId] = useState('');
   const [checkInterval, setCheckInterval] = useState(30);
   const [maxConcurrency, setMaxConcurrency] = useState(1);
-  const [uploadTarget, setUploadTarget] = useState('acfun');
+  const [autoUpload, setAutoUpload] = useState(true);
+  const [customDescription, setCustomDescription] = useState('');
   const [customTitle, setCustomTitle] = useState('');
   
   const [previewData, setPreviewData] = useState(null);
@@ -68,7 +69,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         playlist_id: playlistId.trim(),
         check_interval_minutes: interval,
         max_concurrency: concurrency,
-        upload_target: uploadTarget,
+        upload_target: 'bilibili',
+        auto_upload: autoUpload,
+        custom_description: customDescription.trim(),
         enabled: true,
         custom_title: customTitle.trim() || undefined,
       });
@@ -77,6 +80,8 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         showToast(res.message || 'Playlist 监控添加成功，系统将自动检测拉取！', 'success');
         setPlaylistId('');
         setCustomTitle('');
+        setCustomDescription('');
+        setAutoUpload(true);
         setPreviewData(null);
         setCheckInterval(30);
         setMaxConcurrency(1);
@@ -233,26 +238,74 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
             </span>
           </div>
 
-          {/* 投稿平台 */}
+          {/* 默认投稿平台 */}
           <div className="form-group">
             <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '6px' }}>
               🎯 投稿目标平台
             </label>
-            <select
-              className="input-field"
-              value={uploadTarget}
-              onChange={(e) => setUploadTarget(e.target.value)}
-              disabled={isSubmitting}
-              style={{ width: '100%' }}
-            >
-              <option value="acfun">仅投稿至 AcFun</option>
-              <option value="bilibili">仅投稿至 Bilibili</option>
-              <option value="both">双平台同时发布 (AcFun + B站)</option>
-            </select>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 12px',
+              background: 'rgba(56, 189, 248, 0.08)',
+              borderRadius: '6px',
+              border: '1px solid rgba(56, 189, 248, 0.2)',
+              color: '#38bdf8',
+              fontSize: '0.88rem',
+              fontWeight: 500,
+            }}>
+              <span>📺 哔哩哔哩 (Bilibili)</span>
+              <span className="badge" style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontSize: '0.7rem' }}>
+                默认专属
+              </span>
+            </div>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
-              新视频入库后的目标平台
+              播放列表新视频将默认发布投稿至 B站
             </span>
           </div>
+        </div>
+
+        {/* 自动投稿开关 */}
+        <div className="form-group" style={{
+          marginBottom: '16px',
+          background: 'rgba(255, 255, 255, 0.02)',
+          padding: '12px 16px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.06)'
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontSize: '0.88rem', fontWeight: 500 }}>
+            <input
+              type="checkbox"
+              checked={autoUpload}
+              onChange={(e) => setAutoUpload(e.target.checked)}
+              disabled={isSubmitting}
+              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+            <span style={{ color: '#f1f5f9' }}>🚀 启用自动投稿（默认开启）</span>
+          </label>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginLeft: '26px', marginTop: '4px', display: 'block' }}>
+            开启后，检测到的新视频将在前置处理完成后自动提交投稿至 Bilibili；若关闭，视频处理完毕后将停留在“准备上传”状态待人工确认发布。
+          </span>
+        </div>
+
+        {/* 统一投稿简介 (Description) */}
+        <div className="form-group" style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '6px' }}>
+            📝 统一投稿简介 (Description，可选)
+          </label>
+          <textarea
+            className="input-field"
+            rows={3}
+            placeholder="可选。配置后，该播放列表下的所有视频在投稿时都将统一使用此简介，并自动跳过大模型简介翻译"
+            value={customDescription}
+            onChange={(e) => setCustomDescription(e.target.value)}
+            disabled={isSubmitting}
+            style={{ width: '100%', resize: 'vertical' }}
+          />
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+            若留空，则使用原视频简介或由 AI 翻译生成简介
+          </span>
         </div>
 
         {/* 底部提交动作 */}

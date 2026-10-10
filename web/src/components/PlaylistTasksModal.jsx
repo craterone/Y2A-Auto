@@ -63,7 +63,8 @@ export function PlaylistTasksModal({ monitor, onClose, showToast }) {
   const formatTime = (timeStr) => {
     if (!timeStr) return '--';
     try {
-      const d = new Date(timeStr.replace(' ', 'T') + 'Z');
+      const normalized = timeStr.includes('T') ? timeStr : timeStr.replace(' ', 'T') + 'Z';
+      const d = new Date(normalized);
       if (isNaN(d.getTime())) return timeStr;
       return d.toLocaleString('zh-CN', { hour12: false });
     } catch {
@@ -295,7 +296,7 @@ export function PlaylistTasksModal({ monitor, onClose, showToast }) {
                       flexWrap: 'wrap',
                     }}>
                       <span>任务ID: {task.id.slice(0, 8)}...</span>
-                      <span>平台: {task.upload_target?.toUpperCase() || 'ACFUN'}</span>
+                      <span>平台: {task.upload_target?.toUpperCase() || 'BILIBILI'}</span>
                       {Boolean(task.video_published_at || task.videoPublishedAt) && (
                         <span style={{ color: '#38bdf8' }}>
                           📅 发布时间: <strong>{formatTime(task.video_published_at || task.videoPublishedAt)}</strong>

@@ -1328,6 +1328,16 @@ def init_db():
             logger.info("数据库升级：添加video_published_at字段")
             conn.commit()
 
+        if 'custom_description' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN custom_description TEXT")
+            logger.info("数据库升级：添加custom_description字段")
+            conn.commit()
+
+        if 'auto_upload' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN auto_upload BOOLEAN DEFAULT 1")
+            logger.info("数据库升级：添加auto_upload字段")
+            conn.commit()
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_id ON tasks(playlist_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_monitor_id ON tasks(playlist_monitor_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_video_published_at ON tasks(video_published_at)")
@@ -1382,7 +1392,7 @@ def trigger_check_pending_tasks_debounced(delay_seconds=0.5):
         _pending_check_trigger_timer = threading.Thread(target=_runner, daemon=True)
         _pending_check_trigger_timer.start()
 
-def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None):
+def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True):
     """
     添加新任务到数据库
     
@@ -1392,6 +1402,8 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
         playlist_id: 可选，关联的YouTube播放列表ID
         playlist_monitor_id: 可选，关联的播放列表监控配置ID
         video_published_at: 可选，YouTube视频本身的发布时间 (ISO 8601 或字符串)
+        custom_description: 可选，所属 Playlist 统一配置的投稿简介
+        auto_upload: 可选，是否自动投稿，默认 True
         
     Returns:
         task_id: 新创建的任务ID
@@ -1407,13 +1419,21 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
         except Exception:
             normalized_target = UPLOAD_TARGET_ACFUN
 
+    # 如果有统一投稿简介，同时作为初始 translated 简介
+    initial_desc_trans = custom_description if (custom_description and str(custom_description).strip()) else None
+    au_val = 1 if auto_upload else 0
+
     inserted = False
     for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
         conn = get_db_connection()
         try:
             conn.execute(
-                'INSERT INTO tasks (id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, video_published_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, video_published_at)
+                '''INSERT INTO tasks (
+                    id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, 
+                    video_published_at, custom_description, auto_upload, description_translated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, 
+                 video_published_at, custom_description, au_val, initial_desc_trans)
             )
             conn.commit()
             inserted = True
@@ -1520,6 +1540,11 @@ def update_task(task_id, silent=False, **kwargs):
         'bilibili_upload_response': 'bilibili_upload_response = ?',
         'asr_warning_message': 'asr_warning_message = ?',
         'subtitle_warning_message': 'subtitle_warning_message = ?',
+        'playlist_id': 'playlist_id = ?',
+        'playlist_monitor_id': 'playlist_monitor_id = ?',
+        'video_published_at': 'video_published_at = ?',
+        'custom_description': 'custom_description = ?',
+        'auto_upload': 'auto_upload = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -2700,7 +2725,14 @@ class TaskProcessor:
                 _raise_if_cancelled(task_id, task_logger)
 
             # 6. 上传
-            if self.config.get('AUTO_MODE_ENABLED', False):
+            task_before_upload = get_task(task_id)
+            task_auto_upload = task_before_upload.get('auto_upload') if task_before_upload else None
+            if task_auto_upload is None:
+                should_auto_upload = bool(self.config.get('AUTO_MODE_ENABLED', False))
+            else:
+                should_auto_upload = bool(task_auto_upload)
+
+            if should_auto_upload:
                 # 若已有上传响应，避免重复上传
                 task = get_task(task_id)
                 upload_target = _get_task_upload_target(task)
@@ -2727,8 +2759,8 @@ class TaskProcessor:
                 if task['status'] == TASK_STATES['AWAITING_REVIEW']:
                     task_logger.info("任务当前处于人工审核状态，保留待审核状态")
                 elif task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
-                    # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
-                    if not self.config.get('AUTO_MODE_ENABLED', False) or not _task_has_upload_response(task, upload_target):
+                    # 如果没有开启自动投稿或者上传失败，则标记为"准备上传"
+                    if not should_auto_upload or not _task_has_upload_response(task, upload_target):
                         update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
                         task_logger.info("任务处理完成，标记为准备上传")
                     else:
@@ -3240,8 +3272,25 @@ class TaskProcessor:
         translate_title = bool(self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'))
         translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
 
+        # 检查是否关联 Playlist 统一配置的投稿简介 (custom_description)
+        custom_desc = task.get('custom_description')
+        if not custom_desc and task.get('playlist_monitor_id'):
+            try:
+                from modules.playlist_monitor import playlist_monitor_manager
+                mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+                if mon and mon.get('custom_description'):
+                    custom_desc = mon['custom_description']
+            except Exception:
+                pass
+
+        if custom_desc:
+            task_logger.info("检测到所属播放列表已配置统一投稿简介 (custom_description)，跳过简介 AI 翻译，使用固定简介")
+            translate_description = False
+
         if not translate_title and not translate_description:
-            task_logger.info("标题和描述翻译均已禁用或缺少原文，跳过")
+            task_logger.info("标题和描述翻译均已禁用、无需翻译或缺少原文，跳过")
+            if custom_desc:
+                update_task(task_id, description_translated=custom_desc)
             return True
 
         translated = translate_video_metadata(
@@ -3257,6 +3306,9 @@ class TaskProcessor:
         )
 
         updates = {}
+        if custom_desc:
+            updates['description_translated'] = custom_desc
+
         requested_fields = set(translated.get('requested_fields') or [])
         if translate_title and 'title' in requested_fields:
             updates['video_title_translated'] = translated.get('title', '')
@@ -7234,7 +7286,7 @@ class TaskProcessor:
         # 优先使用翻译后的元数据，避免将原始导流文本继续送给标签模型
         from modules.utils import safe_str
         title = safe_str(task.get('video_title_translated') or task.get('video_title_original'))
-        description = safe_str(task.get('description_translated') or task.get('description_original'))
+        description = safe_str(task.get('custom_description') or task.get('description_translated') or task.get('description_original'))
         
         # 构建OpenAI配置
         openai_config = {
@@ -7287,11 +7339,11 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['PARTITIONING'])
 
         title = task.get('video_title_translated', '') or task.get('video_title_original', '')
-        description = task.get('description_translated', '') or task.get('description_original', '')
+        description = task.get('custom_description') or task.get('description_translated', '') or task.get('description_original', '')
         title_original = task.get('video_title_original', '') or ''
         description_original = task.get('description_original', '') or ''
         title_translated = task.get('video_title_translated', '') or ''
-        description_translated = task.get('description_translated', '') or ''
+        description_translated = task.get('custom_description') or task.get('description_translated', '') or ''
         tags_generated = _normalize_tags_list(task.get('tags_generated'))
         if task.get('tags_generated') and not tags_generated:
             task_logger.warning("解析 AI 标签失败或标签为空，分区推荐将忽略标签上下文")
@@ -8261,7 +8313,19 @@ class TaskProcessor:
         video_path = task.get('video_path_local', '') if task else ''
         cover_path = task.get('cover_path_local', '') if task else ''
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
-        description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
+        
+        # 优先使用 playlist 统一配置的投稿简介 (custom_description)
+        custom_desc = task.get('custom_description') if task else None
+        if not custom_desc and task and task.get('playlist_monitor_id'):
+            try:
+                from modules.playlist_monitor import playlist_monitor_manager
+                mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+                if mon and mon.get('custom_description'):
+                    custom_desc = mon['custom_description']
+            except Exception:
+                pass
+
+        description = (custom_desc or (task.get('description_translated', '') or task.get('description_original', ''))) if task else ''
         upload_target = _get_task_upload_target(task)
         effective_limits = _get_effective_metadata_limits(upload_target)
         partition_id = ''

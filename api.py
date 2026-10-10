@@ -333,7 +333,8 @@ def api_create_playlist_monitor():
         "playlist_id": "PL...",                # 必填，播放列表ID或包含list=的URL
         "check_interval_minutes": 30,         # 可选，检测时间间隔（分钟），默认30
         "max_concurrency": 1,                 # 可选，最大并发运行任务数，默认1
-        "upload_target": "acfun",             # 可选，投稿平台 (acfun|bilibili|both)
+        "auto_upload": true,                  # 可选，是否自动投稿，默认true
+        "custom_description": "统一简介",      # 可选，所有视频投稿时统一使用的简介
         "enabled": true,                      # 可选，是否启用监控，默认true
         "custom_title": "我的播放列表"         # 可选，自定义名称
     }
@@ -350,9 +351,11 @@ def api_create_playlist_monitor():
 
         check_interval = data.get('check_interval_minutes', 30)
         max_concurrency = data.get('max_concurrency', 1)
-        upload_target = data.get('upload_target', 'acfun')
+        upload_target = 'bilibili'  # 默认固定为 bilibili
         enabled = data.get('enabled', True)
         custom_title = data.get('custom_title') or data.get('title')
+        auto_upload = data.get('auto_upload', True)
+        custom_description = data.get('custom_description', '')
 
         monitor = playlist_monitor_manager.create_monitor(
             playlist_id_input=playlist_id_input,
@@ -360,7 +363,9 @@ def api_create_playlist_monitor():
             max_concurrency=max_concurrency,
             upload_target=upload_target,
             enabled=enabled,
-            custom_title=custom_title
+            custom_title=custom_title,
+            auto_upload=bool(auto_upload),
+            custom_description=str(custom_description or '').strip()
         )
 
         return jsonify({

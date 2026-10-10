@@ -73,7 +73,9 @@ class PlaylistMonitorManager:
                     thumbnail_url TEXT,
                     check_interval_minutes INTEGER DEFAULT 30,
                     max_concurrency INTEGER DEFAULT 1,
-                    upload_target TEXT DEFAULT 'acfun',
+                    upload_target TEXT DEFAULT 'bilibili',
+                    auto_upload BOOLEAN DEFAULT 1,
+                    custom_description TEXT,
                     enabled BOOLEAN DEFAULT 1,
                     last_checked_at TIMESTAMP,
                     last_check_status TEXT,
@@ -99,6 +101,18 @@ class PlaylistMonitorManager:
                 )
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_pmh_monitor_video ON playlist_monitor_history(monitor_id, video_id)')
+
+            # 表结构平滑升级检查
+            cursor.execute("PRAGMA table_info(playlist_monitors)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+            if 'auto_upload' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN auto_upload BOOLEAN DEFAULT 1")
+                logger.info("数据库升级：playlist_monitors 添加 auto_upload 字段")
+            if 'custom_description' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN custom_description TEXT")
+                logger.info("数据库升级：playlist_monitors 添加 custom_description 字段")
+            cursor.execute("UPDATE playlist_monitors SET upload_target = 'bilibili' WHERE upload_target = 'acfun' OR upload_target IS NULL")
+
             conn.commit()
             logger.info("Playlist 监控表结构初始化完成")
         except Exception as e:
@@ -159,9 +173,11 @@ class PlaylistMonitorManager:
         playlist_id_input: str,
         check_interval_minutes: int = 30,
         max_concurrency: int = 1,
-        upload_target: str = 'acfun',
+        upload_target: str = 'bilibili',
         enabled: bool = True,
-        custom_title: Optional[str] = None
+        custom_title: Optional[str] = None,
+        auto_upload: bool = True,
+        custom_description: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         创建新的 Playlist 监控
@@ -197,9 +213,10 @@ class PlaylistMonitorManager:
 
         interval = max(5, int(check_interval_minutes or 30))
         concurrency = max(1, int(max_concurrency or 1))
-        target = str(upload_target or 'acfun').strip().lower()
-        if target not in ('acfun', 'bilibili', 'both'):
-            target = 'acfun'
+        # 固定默认投稿平台为 bilibili
+        target = 'bilibili'
+        is_auto_upload = 1 if auto_upload else 0
+        clean_custom_desc = (custom_description or '').strip()
 
         conn = get_db_connection()
         try:
@@ -207,10 +224,12 @@ class PlaylistMonitorManager:
             cursor.execute('''
                 INSERT INTO playlist_monitors (
                     playlist_id, title, description, channel_title, thumbnail_url,
-                    check_interval_minutes, max_concurrency, upload_target, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    check_interval_minutes, max_concurrency, upload_target, enabled,
+                    auto_upload, custom_description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (clean_playlist_id, title, description, channel_title, thumbnail_url,
-                  interval, concurrency, target, 1 if enabled else 0))
+                  interval, concurrency, target, 1 if enabled else 0,
+                  is_auto_upload, clean_custom_desc))
             monitor_id = cursor.lastrowid
             conn.commit()
         finally:
@@ -308,11 +327,19 @@ class PlaylistMonitorManager:
             fields.append('max_concurrency = ?')
             params.append(concurrency)
 
-        if 'upload_target' in update_data:
-            target = str(update_data['upload_target']).strip().lower()
-            if target in ('acfun', 'bilibili', 'both'):
-                fields.append('upload_target = ?')
-                params.append(target)
+        if 'auto_upload' in update_data:
+            en_au = 1 if bool(update_data['auto_upload']) else 0
+            fields.append('auto_upload = ?')
+            params.append(en_au)
+
+        if 'custom_description' in update_data:
+            c_desc = str(update_data['custom_description'] or '').strip()
+            fields.append('custom_description = ?')
+            params.append(c_desc)
+
+        # 投稿目标强制保持并默认固定为 bilibili
+        fields.append('upload_target = ?')
+        params.append('bilibili')
 
         if 'enabled' in update_data:
             en = 1 if bool(update_data['enabled']) else 0
@@ -388,8 +415,10 @@ class PlaylistMonitorManager:
                 return {'success': False, 'message': err_msg, 'new_tasks_count': 0}
 
             playlist_id = monitor['playlist_id']
-            upload_target = monitor.get('upload_target', 'acfun')
-            logger.info(f"开始检测 Playlist 监控 (ID: {monitor_id}, Playlist: {playlist_id})...")
+            upload_target = 'bilibili'  # 默认并固定投稿目标为 bilibili
+            auto_upload = bool(monitor.get('auto_upload', 1) if monitor.get('auto_upload') is not None else 1)
+            custom_description = monitor.get('custom_description', '')
+            logger.info(f"开始检测 Playlist 监控 (ID: {monitor_id}, Playlist: {playlist_id}, 自动投稿: {auto_upload})...")
 
             # 1. 独立开启短连接读出该 monitor 历史上已添加的 video_id，读完立刻关闭连接释放锁
             conn = get_db_connection()
@@ -426,8 +455,9 @@ class PlaylistMonitorManager:
             total_found = len(all_items)
             logger.info(f"Playlist {playlist_id} 共拉取到 {total_found} 个项目")
 
-            # 3. 筛选新视频
+            # 3. 筛选新视频及更新已有视频的真实发布时间
             new_videos = []
+            existing_videos_to_fix = []
             for item in all_items:
                 snippet = item.get('snippet', {})
                 content_details = item.get('contentDetails', {})
@@ -438,12 +468,42 @@ class PlaylistMonitorManager:
                 if v_title in ('Private video', 'Deleted video'):
                     continue
 
+                # 关键修复：contentDetails.videoPublishedAt 是 YouTube 视频真正的发布时间！
+                # snippet.publishedAt 仅是视频加入播放列表的时间！
+                real_published_at = content_details.get('videoPublishedAt') or snippet.get('publishedAt', '')
+
                 if v_id not in recorded_video_ids:
                     new_videos.append({
                         'video_id': v_id,
                         'title': v_title,
-                        'published_at': snippet.get('publishedAt', ''),
+                        'published_at': real_published_at,
                     })
+                else:
+                    if real_published_at:
+                        existing_videos_to_fix.append((real_published_at, monitor_id, v_id))
+
+            # 对历史上已录入但时间可能有误的视频，自动同步修正为真实发布时间
+            if existing_videos_to_fix:
+                u_conn = get_db_connection()
+                try:
+                    u_cursor = u_conn.cursor()
+                    u_cursor.executemany('''
+                        UPDATE playlist_monitor_history
+                        SET published_at = ?
+                        WHERE monitor_id = ? AND video_id = ?
+                    ''', existing_videos_to_fix)
+                    for r_pub, m_id, v_id in existing_videos_to_fix:
+                        v_url = f"https://www.youtube.com/watch?v={v_id}"
+                        u_cursor.execute('''
+                            UPDATE tasks
+                            SET video_published_at = ?
+                            WHERE (playlist_monitor_id = ? OR playlist_id = ?) AND (youtube_url = ? OR youtube_url LIKE ?)
+                        ''', (r_pub, m_id, playlist_id, v_url, f"%{v_id}%"))
+                    u_conn.commit()
+                except Exception as ex:
+                    logger.warning(f"同步修复已有视频的实际发布时间出现异常: {ex}")
+                finally:
+                    u_conn.close()
 
             logger.info(f"Playlist {playlist_id} 发现 {len(new_videos)} 个新视频需要入库")
 
@@ -455,10 +515,12 @@ class PlaylistMonitorManager:
                     video_url = f"https://www.youtube.com/watch?v={v['video_id']}"
                     task_id = add_task(
                         video_url,
-                        upload_target=upload_target,
+                        upload_target='bilibili',
                         playlist_id=playlist_id,
                         playlist_monitor_id=monitor_id,
-                        video_published_at=v['published_at']
+                        video_published_at=v['published_at'],
+                        custom_description=custom_description,
+                        auto_upload=auto_upload
                     )
                     if task_id:
                         history_records.append((monitor_id, v['video_id'], v['title'], v['published_at'], task_id))

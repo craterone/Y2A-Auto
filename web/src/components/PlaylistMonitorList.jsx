@@ -80,7 +80,8 @@ export function PlaylistMonitorList({
   const formatTime = (timeStr) => {
     if (!timeStr) return '尚未检测';
     try {
-      const d = new Date(timeStr.replace(' ', 'T') + 'Z');
+      const normalized = timeStr.includes('T') ? timeStr : timeStr.replace(' ', 'T') + 'Z';
+      const d = new Date(normalized);
       if (isNaN(d.getTime())) return timeStr;
       return d.toLocaleString('zh-CN', { hour12: false });
     } catch {
@@ -202,12 +203,34 @@ export function PlaylistMonitorList({
                       color: 'var(--text-dim)',
                       marginTop: '4px',
                       flexWrap: 'wrap',
+                      alignItems: 'center',
                     }}>
                       <span>ID: <code style={{ color: '#38bdf8' }}>{m.playlist_id}</code></span>
                       {m.channel_title && <span>频道: {m.channel_title}</span>}
-                      <span>投稿目标: <strong>{m.upload_target?.toUpperCase()}</strong></span>
+                      <span>投稿目标: <strong style={{ color: '#38bdf8' }}>BILIBILI</strong></span>
+                      <span className={`badge ${m.auto_upload !== false && m.auto_upload !== 0 ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: '0.68rem', padding: '2px 6px' }}>
+                        {m.auto_upload !== false && m.auto_upload !== 0 ? '🚀 自动投稿' : '⏸ 手动发布'}
+                      </span>
                       <span>已探测总视频: <strong>{m.total_videos_found || 0}</strong></span>
                     </div>
+
+                    {Boolean(m.custom_description) && (
+                      <div style={{
+                        marginTop: '6px',
+                        fontSize: '0.75rem',
+                        color: 'var(--text-secondary, #cbd5e1)',
+                        background: 'rgba(255, 255, 255, 0.03)',
+                        border: '1px dashed rgba(255, 255, 255, 0.1)',
+                        borderRadius: '4px',
+                        padding: '4px 8px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        maxWidth: '650px',
+                      }} title={m.custom_description}>
+                        📝 统一简介: {m.custom_description}
+                      </div>
+                    )}
                   </div>
                 </div>
 
