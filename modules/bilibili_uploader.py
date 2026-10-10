@@ -394,10 +394,16 @@ class BilibiliUploader:
             def on_cover_failed(data):
                 self.log(f"Bilibili封面上传失败：{_event_error(data)}")
 
+            captured_cid = [None]
+
             @uploader.on(video_uploader.VideoUploaderEvents.PRE_SUBMIT.value)
-            def on_pre_submit(_data):
+            def on_pre_submit(data):
                 _emit_progress("99.0%")
                 self.log("视频和封面上传完成，正在提交Bilibili投稿")
+                if isinstance(data, dict):
+                    v_list = data.get("videos") or []
+                    if v_list and isinstance(v_list[0], dict) and v_list[0].get("cid"):
+                        captured_cid[0] = v_list[0]["cid"]
 
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_SUBMIT.value)
             def on_after_submit(_data):
@@ -445,6 +451,7 @@ class BilibiliUploader:
             return True, {
                 "bvid": bvid,
                 "aid": aid,
+                "cid": captured_cid[0],
                 "url": video_url,
             }
 

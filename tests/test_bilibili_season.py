@@ -156,14 +156,16 @@ class TestBilibiliSeason(unittest.TestCase):
         self.assertEqual(len(seasons[0]["sections"]), 1)
         self.assertEqual(seasons[0]["sections"][0]["section_id"], 99999)
 
+    @patch("modules.bilibili_season.get_video_cid")
     @patch("modules.bilibili_season.load_cookie_dict")
     @patch("modules.bilibili_season.requests.post")
-    def test_06_add_video_to_season(self, mock_post, mock_cookies):
-        """测试调用接口将视频加入合集小节"""
+    def test_06_add_video_to_season(self, mock_post, mock_cookies, mock_get_cid):
+        """测试调用接口将视频加入合集小节（符合 B 站规范）"""
         mock_cookies.return_value = {
             "SESSDATA": "mock_sessdata",
             "bili_jct": "mock_jct",
         }
+        mock_get_cid.return_value = 88990011
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -178,6 +180,7 @@ class TestBilibiliSeason(unittest.TestCase):
             section_id=99999,
             aid=1234567,
             bvid="BV1mocktest",
+            cid=88990011,
             title="测试视频",
             cookie_file="/mock/cookie.json"
         )
@@ -186,9 +189,12 @@ class TestBilibiliSeason(unittest.TestCase):
 
         # 验证 post 请求参数
         called_args, called_kwargs = mock_post.call_args
-        self.assertEqual(called_kwargs["json"]["section_id"], 99999)
-        self.assertEqual(called_kwargs["json"]["episodes"][0]["bvid"], "BV1mocktest")
-        self.assertEqual(called_kwargs["params"]["csrf"], "mock_jct")
+        self.assertEqual(called_kwargs["json"]["sectionId"], 99999)
+        self.assertEqual(called_kwargs["json"]["episodes"][0]["aid"], 1234567)
+        self.assertEqual(called_kwargs["json"]["episodes"][0]["cid"], 88990011)
+        self.assertEqual(called_kwargs["json"]["episodes"][0]["charging_pay"], 0)
+        self.assertEqual(called_kwargs["json"]["csrf"], "mock_jct")
+        self.assertIn("csrf=mock_jct", called_args[0])
 
     @patch("modules.bilibili_season.get_user_seasons")
     def test_07_restful_api_get_seasons(self, mock_get_seasons):

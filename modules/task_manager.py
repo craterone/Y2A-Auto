@@ -8584,10 +8584,16 @@ class TaskProcessor:
                         from modules.bilibili_season import add_video_to_season
                         bvid = result.get('bvid') if isinstance(result, dict) else None
                         aid = result.get('aid') if isinstance(result, dict) else None
+                        cid = result.get('cid') if isinstance(result, dict) else None
+                        task_logger.debug(
+                            f"[debug] 准备调用 add_video_to_season: season_id={season_id}, "
+                            f"section_id={section_id}, aid={aid}, bvid={bvid}, cid={cid}, title={title!r}"
+                        )
                         add_ok, add_msg = add_video_to_season(
                             season_id=int(season_id),
                             aid=aid,
                             bvid=bvid,
+                            cid=cid,
                             title=title,
                             section_id=int(section_id) if section_id else None,
                             cookie_file=bilibili_cookies_path
@@ -8597,7 +8603,7 @@ class TaskProcessor:
                         else:
                             task_logger.warning(f"视频加入 Bilibili 合集未成功: {add_msg}")
                     except Exception as s_exc:
-                        task_logger.warning(f"添加视频到合集发生异常（不影响视频上传成功）: {s_exc}")
+                        task_logger.warning(f"添加视频到合集发生异常（不影响视频上传成功）: {s_exc}", exc_info=True)
 
                 # 上传到 B 站成功后立即删除本地文件，腾出磁盘空间，
                 # 避免大视频（如 CS2 比赛直播流，单条可达十余 GB）长期占用磁盘，
