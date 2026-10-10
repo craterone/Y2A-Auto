@@ -18,7 +18,7 @@ from .bilibili_auth import load_credential_from_file, validate_credential_remote
 from .utils import get_app_subdir
 
 BILIBILI_TITLE_LIMIT = 80
-BILIBILI_DESCRIPTION_LIMIT = 2000
+BILIBILI_DESCRIPTION_LIMIT = 1000
 
 
 def setup_task_logger(task_id):
@@ -423,6 +423,8 @@ class BilibiliUploader:
 
             _emit_progress("0.0%")
             self.log("开始上传到bilibili")
+            if not self.task_id or safe_desc != (description or ""):
+                self.log(f"bilibili 投稿 description (字数: {len(safe_desc)}):\n{safe_desc}")
             try:
                 result = asyncio.run(uploader.start())
             except RuntimeError:

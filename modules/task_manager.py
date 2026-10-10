@@ -573,7 +573,7 @@ def _get_effective_metadata_limits(upload_target):
     if target == UPLOAD_TARGET_BILIBILI:
         return {
             'title_limit': 80,
-            'description_limit': 2000,
+            'description_limit': 1000,
         }
     return {
         'title_limit': 50,
@@ -8426,6 +8426,8 @@ class TaskProcessor:
             )
         except Exception as e:
             task_logger.warning(f"构建bilibili投稿简介失败，回退原简介: {e}")
+
+        task_logger.info(f"bilibili 上传 description (字数: {len(description)}):\n{description}")
 
         if self.config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False):
             from modules.utils import safe_str
