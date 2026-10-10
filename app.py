@@ -15,7 +15,7 @@ import threading
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context, send_from_directory, abort
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
@@ -58,6 +58,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
+
+# 前端构建产物目录
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+WEB_DIST_DIR = os.path.join(WEB_DIR, 'dist')
 
 
 @app.context_processor
@@ -1623,10 +1627,35 @@ def logout():
     return redirect(url_for('login'))
 
 @app.route('/')
-@login_required
 def index():
-    """首页"""
-    logger.info("访问首页")
+    """新版 Web 首页（React SPA）"""
+    index_file = os.path.join(WEB_DIST_DIR, 'index.html')
+    if os.path.isfile(index_file):
+        return send_from_directory(WEB_DIST_DIR, 'index.html')
+    # 若前端尚未构建，回退到旧版仪表盘
+    logger.warning("web/dist/index.html 未找到，回退到旧版仪表盘")
+    return redirect(url_for('old'))
+
+@app.route('/assets/<path:filename>')
+def serve_web_assets(filename):
+    """服务 web/dist/assets 下的静态资源"""
+    assets_dir = os.path.join(WEB_DIST_DIR, 'assets')
+    return send_from_directory(assets_dir, filename)
+
+@app.route('/<path:filename>')
+def serve_web_root_static(filename):
+    """服务 web/dist 根目录下的静态资源（如 favicon.svg、icons.svg 等）"""
+    file_path = safe_join(WEB_DIST_DIR, filename)
+    if file_path and os.path.isfile(file_path):
+        return send_from_directory(WEB_DIST_DIR, filename)
+    abort(404)
+
+@app.route('/old')
+@app.route('/old.html')
+@login_required
+def old():
+    """旧版仪表盘页面"""
+    logger.info("访问旧版仪表盘页面")
     # 统计信息用于仪表盘
     try:
         from modules.task_manager import get_db_connection
@@ -1756,7 +1785,7 @@ def index():
         }
         recent_tasks = []
 
-    return render_template('index.html', stats=stats, recent_tasks=recent_tasks)
+    return render_template('old.html', stats=stats, recent_tasks=recent_tasks)
 
 @app.route('/tasks')
 @login_required

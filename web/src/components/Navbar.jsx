@@ -73,6 +73,16 @@ export function Navbar({ authState, onLogout, onOpenLogin, activeTab, onTabChang
         </div>
 
         <div className="nav-actions">
+          <a
+            href="/old"
+            className="btn btn-secondary"
+            style={{ padding: '7px 12px', fontSize: '0.825rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+            title="访问旧版后台"
+          >
+            <span>🏛️</span>
+            <span>旧版后台</span>
+          </a>
+
           <div className="status-badge">
             <span className={`status-dot ${loggedIn ? 'online' : 'offline'}`} />
             <span>
