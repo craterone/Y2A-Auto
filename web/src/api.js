@@ -123,7 +123,19 @@ export const api = {
     });
   },
 
+  /**
+   * 删除任务
+   * @param {string} taskId 任务ID
+   * @param {boolean} deleteFiles 是否同时清理关联文件，默认 true
+   */
+  async deleteTask(taskId, deleteFiles = true) {
+    return request(`/tasks/${taskId}?delete_files=${deleteFiles}`, {
+      method: 'DELETE',
+    });
+  },
+
   // ==========================================
+
   // Playlist 监控相关 API
   // ==========================================
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const STATUS_MAP = {
   pending: { label: '排队中', color: '#94a3b8', bg: 'rgba(148, 163, 184, 0.15)' },
@@ -16,7 +16,9 @@ const STATUS_MAP = {
   abandoned: { label: '已废弃', color: '#64748b', bg: 'rgba(100, 116, 139, 0.15)' },
 };
 
-export function TaskList({ tasks, total, loading, onRefresh }) {
+export function TaskList({ tasks, total, loading, onRefresh, onDelete }) {
+  const [deletingId, setDeletingId] = useState(null);
+
   const getStatusBadge = (status) => {
     const s = STATUS_MAP[status] || {
       label: status || '未知',
@@ -55,6 +57,22 @@ export function TaskList({ tasks, total, loading, onRefresh }) {
   const copyId = (id) => {
     navigator.clipboard?.writeText(id);
   };
+
+  const handleDelete = async (task) => {
+    const taskName = task.video_title_translated || task.video_title || task.id;
+    const confirmed = window.confirm(`确定要删除任务「${taskName}」吗？\n该操作会同时清理本地相关下载文件。`);
+    if (!confirmed) return;
+
+    if (onDelete) {
+      setDeletingId(task.id);
+      try {
+        await onDelete(task.id);
+      } finally {
+        setDeletingId(null);
+      }
+    }
+  };
+
 
   return (
     <div className="glass-card">
@@ -149,16 +167,42 @@ export function TaskList({ tasks, total, loading, onRefresh }) {
                     {task.created_at || '刚刚'}
                   </td>
                   <td style={{ textAlign: 'right' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => copyId(task.id)}
-                      title="复制完整任务ID"
-                      style={{ padding: '4px 8px', fontSize: '0.75rem' }}
-                    >
-                      复制 ID
-                    </button>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => copyId(task.id)}
+                        title="复制完整任务ID"
+                        style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                      >
+                        复制 ID
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        onClick={() => handleDelete(task)}
+                        disabled={deletingId === task.id}
+                        title="删除该任务及其文件"
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '0.75rem',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                      >
+                        {deletingId === task.id ? (
+                          <>
+                            <span className="spinner" style={{ width: '10px', height: '10px' }} />
+                            删除中
+                          </>
+                        ) : (
+                          '删除'
+                        )}
+                      </button>
+                    </div>
                   </td>
+
                 </tr>
               ))}
             </tbody>

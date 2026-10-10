@@ -162,10 +162,26 @@ export function App() {
     return res;
   };
 
+  // 删除单任务
+  const handleDeleteTask = async (taskId) => {
+    try {
+      const res = await api.deleteTask(taskId, true);
+      if (res.success) {
+        showToast(res.message || '任务已成功删除', 'success');
+        fetchTasks(true);
+      }
+      return res;
+    } catch (err) {
+      showToast(err.message || '删除任务失败', 'error');
+      throw err;
+    }
+  };
+
   // 新建 Playlist 监控回调
   const handleMonitorCreated = () => {
     fetchMonitors(false);
   };
+
 
   // 首屏加载中
   if (!authState.checked) {
@@ -219,7 +235,9 @@ export function App() {
               total={totalTasks}
               loading={loadingTasks}
               onRefresh={() => fetchTasks(false)}
+              onDelete={handleDeleteTask}
             />
+
           </div>
         ) : (
           <div style={{ maxWidth: '1080px', margin: '0 auto' }}>

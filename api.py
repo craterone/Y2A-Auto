@@ -335,6 +335,42 @@ def api_get_task(task_id):
         return jsonify({'success': False, 'message': f'获取任务详情失败: {str(e)}'}), 500
 
 
+@api_bp.route('/tasks/<task_id>', methods=['DELETE'])
+@api_login_required
+def api_delete_task(task_id):
+    """
+    RESTful API: 删除指定任务
+    参数: delete_files (bool, 默认 true)
+    """
+    web_app = _get_app_module()
+    try:
+        task = web_app.get_task(task_id)
+        if not task:
+            return jsonify({'success': False, 'message': '任务不存在'}), 404
+
+        delete_files = True
+        if request.is_json and request.get_json(silent=True) is not None:
+            delete_files = bool(request.get_json().get('delete_files', True))
+        elif 'delete_files' in request.args:
+            delete_files = request.args.get('delete_files', 'true').lower() in ('true', 'yes', '1', 'on')
+
+        success = web_app.delete_task(task_id, delete_files=delete_files)
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '任务已成功删除'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': '删除任务失败'
+            }), 500
+    except Exception as e:
+        logger.error(f"API删除任务异常: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'删除任务失败: {str(e)}'}), 500
+
+
+
 # ==========================================
 # YouTube Playlist 监控 RESTful API
 # ==========================================

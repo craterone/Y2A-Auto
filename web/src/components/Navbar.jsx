@@ -46,7 +46,7 @@ export function Navbar({ authState, onLogout, onOpenLogin, activeTab, onTabChang
             }}
           >
             <span>📺</span>
-            <span>单视频任务</span>
+            <span>单任务视频</span>
           </button>
 
           <button

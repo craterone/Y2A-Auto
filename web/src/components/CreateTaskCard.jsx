@@ -3,7 +3,7 @@ import { api } from '../api';
 
 export function CreateTaskCard({ onTaskCreated, isSubmitting, setIsSubmitting }) {
   const [youtubeUrl, setYoutubeUrl] = useState('');
-  const [uploadTarget, setUploadTarget] = useState('acfun');
+  const uploadTarget = 'bilibili';
   const [autoStart, setAutoStart] = useState(true);
   const [lastResult, setLastResult] = useState(null);
 
@@ -14,7 +14,6 @@ export function CreateTaskCard({ onTaskCreated, isSubmitting, setIsSubmitting })
   const hasFetchedRef = useRef(false);
 
   const isPlaylist = youtubeUrl.includes('playlist') || youtubeUrl.includes('list=');
-  const isBilibiliTarget = uploadTarget === 'bilibili' || uploadTarget === 'both';
 
   // 加载用户已创建的合集列表
   const loadSeasons = useCallback(async (forceRefresh = false) => {
@@ -31,13 +30,14 @@ export function CreateTaskCard({ onTaskCreated, isSubmitting, setIsSubmitting })
     }
   }, []);
 
-  // 当选择 B 站或双平台且尚未加载合集时，自动获取一次
+  // 页面加载时自动获取合集列表
   useEffect(() => {
-    if (isBilibiliTarget && !hasFetchedRef.current) {
+    if (!hasFetchedRef.current) {
       hasFetchedRef.current = true;
       loadSeasons(false);
     }
-  }, [isBilibiliTarget, loadSeasons]);
+  }, [loadSeasons]);
+
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -118,80 +118,68 @@ export function CreateTaskCard({ onTaskCreated, isSubmitting, setIsSubmitting })
           )}
         </div>
 
-        {/* 目标平台选择 */}
+        {/* 目标平台选择（仅保留 bilibili） */}
         <div className="form-group">
           <label className="form-label">发布目标平台</label>
           <div className="platform-selector">
             <button
               type="button"
-              className={`platform-btn ${uploadTarget === 'acfun' ? 'active' : ''}`}
-              onClick={() => setUploadTarget('acfun')}
-            >
-              <span style={{ color: '#fd4c5a' }}>●</span> AcFun (A站)
-            </button>
-            <button
-              type="button"
-              className={`platform-btn ${uploadTarget === 'bilibili' ? 'active' : ''}`}
-              onClick={() => setUploadTarget('bilibili')}
+              className="platform-btn active"
+              style={{ cursor: 'default' }}
             >
               <span style={{ color: '#00aeec' }}>●</span> Bilibili (B站)
             </button>
-            <button
-              type="button"
-              className={`platform-btn ${uploadTarget === 'both' ? 'active' : ''}`}
-              onClick={() => setUploadTarget('both')}
-            >
-              <span style={{ color: '#c084fc' }}>●</span> 双平台同步
-            </button>
+          </div>
+          <div className="form-hint">
+            单任务发布平台当前固定为 Bilibili (B站)
           </div>
         </div>
 
-        {/* Bilibili 合集选择（仅当发布目标包含 Bilibili 时显示） */}
-        {isBilibiliTarget && (
-          <div className="form-group" style={{
-            background: 'rgba(56, 189, 248, 0.04)',
-            border: '1px solid rgba(56, 189, 248, 0.2)',
-            borderRadius: 'var(--radius-md)',
-            padding: '12px 14px',
-            marginBottom: '16px',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span>📚</span> Bilibili 合集归属（可选）
-              </label>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => loadSeasons(true)}
-                disabled={loadingSeasons || isSubmitting}
-                style={{ padding: '2px 8px', fontSize: '0.75rem', height: '26px' }}
-                title="重新向 B 站拉取最新合集列表"
-              >
-                {loadingSeasons ? '加载中...' : '🔄 刷新合集'}
-              </button>
-            </div>
-
-            <select
-              className="input-field"
-              value={selectedSeasonId}
-              onChange={(e) => setSelectedSeasonId(e.target.value)}
-              disabled={isSubmitting || loadingSeasons}
-              style={{ width: '100%', background: 'rgba(15, 23, 42, 0.6)' }}
+        {/* Bilibili 合集选择 */}
+        <div className="form-group" style={{
+          background: 'rgba(56, 189, 248, 0.04)',
+          border: '1px solid rgba(56, 189, 248, 0.2)',
+          borderRadius: 'var(--radius-md)',
+          padding: '12px 14px',
+          marginBottom: '16px',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>📚</span> Bilibili 合集归属（可选）
+            </label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => loadSeasons(true)}
+              disabled={loadingSeasons || isSubmitting}
+              style={{ padding: '2px 8px', fontSize: '0.75rem', height: '26px' }}
+              title="重新向 B 站拉取最新合集列表"
             >
-              <option value="">不加入合集（普通独立投稿）</option>
-              {seasons.map((s) => (
-                <option key={s.season_id} value={s.season_id}>
-                  {s.title} {s.ep_num !== undefined ? `(已收录 ${s.ep_num} 话)` : ''}
-                </option>
-              ))}
-            </select>
-            <div className="form-hint" style={{ marginTop: '6px' }}>
-              {selectedSeasonId
-                ? '✨ 视频成功发布至 B 站后，系统将自动调用接口将其收录至该合集。'
-                : '选择已有合集后，任务投稿成功将自动追加至该合集；未配置则作为独立视频发布。'}
-            </div>
+              {loadingSeasons ? '加载中...' : '🔄 刷新合集'}
+            </button>
           </div>
-        )}
+
+          <select
+            className="input-field"
+            value={selectedSeasonId}
+            onChange={(e) => setSelectedSeasonId(e.target.value)}
+            disabled={isSubmitting || loadingSeasons}
+            style={{ width: '100%', background: 'rgba(15, 23, 42, 0.6)' }}
+          >
+            <option value="">不加入合集（普通独立投稿）</option>
+            {seasons.map((s) => (
+              <option key={s.season_id} value={s.season_id}>
+                {s.title} {s.ep_num !== undefined ? `(已收录 ${s.ep_num} 话)` : ''}
+              </option>
+            ))}
+          </select>
+          <div className="form-hint" style={{ marginTop: '6px' }}>
+            {selectedSeasonId
+              ? '✨ 视频成功发布至 B 站后，系统将自动调用接口将其收录至该合集。'
+              : '选择已有合集后，任务投稿成功将自动追加至该合集；未配置则作为独立视频发布。'}
+          </div>
+        </div>
+
 
         {/* 立即启动选项 */}
         <div className="form-group">

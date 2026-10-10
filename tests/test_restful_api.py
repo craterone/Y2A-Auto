@@ -184,8 +184,15 @@ class RestfulApiTests(unittest.TestCase):
             self.assertTrue(data['success'])
             self.assertEqual(data['task_id'], 'task-uuid-123')
             self.assertFalse(data['started'])
-            mock_add.assert_called_once_with('https://www.youtube.com/watch?v=dQw4w9WgXcQ', upload_target='bilibili')
+            mock_add.assert_called_once_with(
+                'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                upload_target='bilibili',
+                bilibili_season_id=None,
+                bilibili_section_id=None,
+                bilibili_season_title=None
+            )
             mock_start.assert_not_called()
+
 
             # 添加任务（显式要求立即启动）
             res_start = self.client.post('/api/tasks/add', json={
@@ -263,6 +270,30 @@ class RestfulApiTests(unittest.TestCase):
             res_not_found = self.client.get('/api/tasks/non-exist')
             self.assertEqual(res_not_found.status_code, 404)
 
+    def test_api_delete_task(self):
+        """测试删除任务 API (DELETE /api/tasks/<task_id>)"""
+        fake_config = {'password_protection_enabled': False}
+        fake_task = {'id': 'task-delete-me', 'status': 'completed'}
+
+        with patch.object(web_app, 'load_config', return_value=fake_config), \
+             patch.object(web_app, 'get_task', side_effect=lambda tid: fake_task if tid == 'task-delete-me' else None), \
+             patch.object(web_app, 'delete_task', return_value=True) as mock_delete:
+
+            with self.client.session_transaction() as sess:
+                sess['logged_in'] = True
+
+            # 1. 删除不存在的任务 -> 404
+            res_404 = self.client.delete('/api/tasks/non-existent-task')
+            self.assertEqual(res_404.status_code, 404)
+            self.assertFalse(res_404.get_json()['success'])
+
+            # 2. 删除存在的任务 -> 200
+            res_200 = self.client.delete('/api/tasks/task-delete-me?delete_files=true')
+            self.assertEqual(res_200.status_code, 200)
+            self.assertTrue(res_200.get_json()['success'])
+            mock_delete.assert_called_once_with('task-delete-me', delete_files=True)
+
 
 if __name__ == '__main__':
     unittest.main()
+
