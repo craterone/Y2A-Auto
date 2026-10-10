@@ -134,7 +134,18 @@ export const api = {
     });
   },
 
+  /**
+   * 清空所有任务
+   * @param {boolean} deleteFiles 是否同时清理关联文件，默认 true
+   */
+  async clearAllTasks(deleteFiles = true) {
+    return request(`/tasks?delete_files=${deleteFiles}`, {
+      method: 'DELETE',
+    });
+  },
+
   // ==========================================
+
 
   // Playlist 监控相关 API
   // ==========================================

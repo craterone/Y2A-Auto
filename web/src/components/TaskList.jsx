@@ -16,8 +16,9 @@ const STATUS_MAP = {
   abandoned: { label: '已废弃', color: '#64748b', bg: 'rgba(100, 116, 139, 0.15)' },
 };
 
-export function TaskList({ tasks, total, loading, onRefresh, onDelete }) {
+export function TaskList({ tasks, total, loading, onRefresh, onDelete, onClearAll }) {
   const [deletingId, setDeletingId] = useState(null);
+  const [isClearing, setIsClearing] = useState(false);
 
   const getStatusBadge = (status) => {
     const s = STATUS_MAP[status] || {
@@ -73,10 +74,26 @@ export function TaskList({ tasks, total, loading, onRefresh, onDelete }) {
     }
   };
 
+  const handleClearAll = async () => {
+    const taskCount = total || tasks.length;
+    const confirmed = window.confirm(
+      `确定要清除全部 ${taskCount} 个任务吗？\n所有任务记录以及本地下载的媒体文件将被彻底删除，此操作不可撤销！`
+    );
+    if (!confirmed) return;
+
+    if (onClearAll) {
+      setIsClearing(true);
+      try {
+        await onClearAll();
+      } finally {
+        setIsClearing(false);
+      }
+    }
+  };
 
   return (
     <div className="glass-card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h2 style={{ fontSize: '1.2rem', fontWeight: '700' }}>近期任务</h2>
@@ -96,23 +113,46 @@ export function TaskList({ tasks, total, loading, onRefresh, onDelete }) {
           </p>
         </div>
 
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={onRefresh}
-          disabled={loading}
-          style={{ padding: '6px 14px', fontSize: '0.825rem' }}
-        >
-          {loading ? (
-            <>
-              <span className="spinner" style={{ width: '14px', height: '14px' }} />
-              刷新中
-            </>
-          ) : (
-            '↻ 刷新列表'
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {(total > 0 || tasks.length > 0) && (
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={handleClearAll}
+              disabled={isClearing || loading}
+              style={{ padding: '6px 14px', fontSize: '0.825rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              title="清除所有任务及关联的下载文件"
+            >
+              {isClearing ? (
+                <>
+                  <span className="spinner" style={{ width: '12px', height: '12px' }} />
+                  清空中...
+                </>
+              ) : (
+                '🗑️ 清除所有任务'
+              )}
+            </button>
           )}
-        </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onRefresh}
+            disabled={loading || isClearing}
+            style={{ padding: '6px 14px', fontSize: '0.825rem' }}
+          >
+            {loading ? (
+              <>
+                <span className="spinner" style={{ width: '14px', height: '14px' }} />
+                刷新中
+              </>
+            ) : (
+              '↻ 刷新列表'
+            )}
+          </button>
+        </div>
       </div>
+
 
       {tasks.length === 0 ? (
         <div style={{

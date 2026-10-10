@@ -177,10 +177,26 @@ export function App() {
     }
   };
 
+  // 清空所有任务
+  const handleClearAllTasks = async () => {
+    try {
+      const res = await api.clearAllTasks(true);
+      if (res.success) {
+        showToast(res.message || '所有任务已成功清空', 'success');
+        fetchTasks(false);
+      }
+      return res;
+    } catch (err) {
+      showToast(err.message || '清空任务失败', 'error');
+      throw err;
+    }
+  };
+
   // 新建 Playlist 监控回调
   const handleMonitorCreated = () => {
     fetchMonitors(false);
   };
+
 
 
   // 首屏加载中
@@ -236,7 +252,9 @@ export function App() {
               loading={loadingTasks}
               onRefresh={() => fetchTasks(false)}
               onDelete={handleDeleteTask}
+              onClearAll={handleClearAllTasks}
             />
+
 
           </div>
         ) : (

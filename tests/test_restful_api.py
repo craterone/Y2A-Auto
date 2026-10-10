@@ -293,7 +293,24 @@ class RestfulApiTests(unittest.TestCase):
             self.assertTrue(res_200.get_json()['success'])
             mock_delete.assert_called_once_with('task-delete-me', delete_files=True)
 
+    def test_api_clear_all_tasks(self):
+        """测试清空所有任务 API (DELETE /api/tasks)"""
+        fake_config = {'password_protection_enabled': False}
+
+        with patch.object(web_app, 'load_config', return_value=fake_config), \
+             patch.object(web_app, 'clear_all_tasks', return_value=True) as mock_clear:
+
+            with self.client.session_transaction() as sess:
+                sess['logged_in'] = True
+
+            res = self.client.delete('/api/tasks?delete_files=true')
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertTrue(data['success'])
+            mock_clear.assert_called_once_with(delete_files=True)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
