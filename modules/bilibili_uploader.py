@@ -334,6 +334,12 @@ class BilibiliUploader:
                 err = data.get("err") if isinstance(data, dict) else data
                 return _compact_exception_text(str(err)) or "未知错误"
 
+            @uploader.on(video_uploader.VideoUploaderEvents.CHOOSE_LINE.value)
+            def on_choose_line(data):
+                line_data = data.get("line") if isinstance(data, dict) else data
+                line_name = line_data.get("upcdn") if isinstance(line_data, dict) else line_data
+                self.log(f"Bilibili 选择上传线路: {line_name}")
+
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_CHUNK.value)
             def on_after_chunk(data):
                 try:
@@ -425,13 +431,24 @@ class BilibiliUploader:
             self.log("开始上传到bilibili")
             if not self.task_id or safe_desc != (description or ""):
                 self.log(f"bilibili 投稿 description (字数: {len(safe_desc)}):\n{safe_desc}")
+            task_handler = None
+            if self.logger and isinstance(getattr(self.logger, "handlers", None), list):
+                for h in self.logger.handlers:
+                    if isinstance(h, logging.Handler):
+                        task_handler = h
+                        video_uploader.logger.addHandler(task_handler)
+                        break
             try:
-                result = asyncio.run(uploader.start())
-            except RuntimeError:
-                # 已有事件循环时，在新线程中运行
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    result = pool.submit(asyncio.run, uploader.start()).result()
+                try:
+                    result = asyncio.run(uploader.start())
+                except RuntimeError:
+                    # 已有事件循环时，在新线程中运行
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        result = pool.submit(asyncio.run, uploader.start()).result()
+            finally:
+                if task_handler:
+                    video_uploader.logger.removeHandler(task_handler)
 
             _emit_progress("100.0%")
             self.log(f"bilibili上传完成: {result}")

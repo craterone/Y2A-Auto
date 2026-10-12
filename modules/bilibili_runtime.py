@@ -27,7 +27,12 @@ def configure_bilibili_runtime() -> bool:
         request_settings.set("timeout", 240)
 
         # 关闭 SSL 证书验证
-        request_settings.set_verify_ssl(False)
+        if hasattr(request_settings, "set_verify_ssl"):
+            request_settings.set_verify_ssl(False)
+
+        # 确保 SDK 日志级别为 INFO，避免被 root logger 的 WARNING 过滤
+        logging.getLogger("modules.bili_sdk").setLevel(logging.INFO)
+        logging.getLogger("bili_sdk").setLevel(logging.INFO)
 
         _INITIALIZED = True
         _LAST_ERROR = None
