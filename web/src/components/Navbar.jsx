@@ -26,6 +26,7 @@ export function Navbar({ authState, onLogout, onOpenLogin, activeTab, onTabChang
           padding: '3px',
           borderRadius: '10px',
           border: '1px solid rgba(255, 255, 255, 0.08)',
+          gap: '2px',
         }}>
           <button
             type="button"
@@ -43,10 +44,34 @@ export function Navbar({ authState, onLogout, onOpenLogin, activeTab, onTabChang
               alignItems: 'center',
               gap: '6px',
               transition: 'all 0.15s ease',
+              whiteSpace: 'nowrap',
             }}
           >
             <span>📺</span>
-            <span>单任务视频</span>
+            <span>任务列表</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onTabChange && onTabChange('create_task')}
+            style={{
+              padding: '6px 16px',
+              fontSize: '0.85rem',
+              fontWeight: activeTab === 'create_task' ? 600 : 400,
+              background: activeTab === 'create_task' ? 'var(--primary-color, #38bdf8)' : 'transparent',
+              color: activeTab === 'create_task' ? '#0f172a' : 'var(--text-dim)',
+              border: 'none',
+              borderRadius: '7px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.15s ease',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span>➕</span>
+            <span>新建任务</span>
           </button>
 
           <button
@@ -65,6 +90,7 @@ export function Navbar({ authState, onLogout, onOpenLogin, activeTab, onTabChang
               alignItems: 'center',
               gap: '6px',
               transition: 'all 0.15s ease',
+              whiteSpace: 'nowrap',
             }}
           >
             <span>📑</span>

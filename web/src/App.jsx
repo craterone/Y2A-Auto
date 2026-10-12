@@ -152,7 +152,7 @@ export function App() {
   useEffect(() => {
     if (!authState.loggedIn) return;
     const timer = setInterval(() => {
-      if (activeTab === 'tasks') {
+      if (activeTab === 'tasks' || activeTab === 'create_task') {
         fetchTasks(taskPageRef.current, taskPerPageRef.current, true);
       } else if (activeTab === 'playlist') {
         fetchMonitors(true);
@@ -194,9 +194,10 @@ export function App() {
     const res = await api.createTask(taskPayload);
     if (res.success) {
       showToast(res.message || '任务创建成功！', 'success');
-      // 创建成功后自动切回第1页以便查看最新任务
+      // 创建成功后自动切回第1页以便查看最新任务，并跳转到任务列表
       setTaskPage(1);
       fetchTasks(1, taskPerPageRef.current, true);
+      setActiveTab('tasks');
     }
     return res;
   };
@@ -287,27 +288,27 @@ export function App() {
             <LoginForm onLoginSuccess={handleLogin} />
           </div>
         ) : activeTab === 'tasks' ? (
-          <div className="grid-layout">
+          <TaskList
+            tasks={tasks}
+            total={totalTasks}
+            page={taskPage}
+            pageSize={taskPerPage}
+            totalPages={totalTaskPages}
+            loading={loadingTasks}
+            onRefresh={() => fetchTasks(taskPage, taskPerPage, false)}
+            onDelete={handleDeleteTask}
+            onClearAll={handleClearAllTasks}
+            onPageChange={handleTaskPageChange}
+            onPageSizeChange={handleTaskPerPageChange}
+            onNavigateCreateTask={() => setActiveTab('create_task')}
+          />
+        ) : activeTab === 'create_task' ? (
+          <div style={{ maxWidth: '640px', margin: '0 auto' }}>
             <CreateTaskCard
               onTaskCreated={handleTaskCreated}
               isSubmitting={isSubmitting}
               setIsSubmitting={setIsSubmitting}
             />
-            <TaskList
-              tasks={tasks}
-              total={totalTasks}
-              page={taskPage}
-              pageSize={taskPerPage}
-              totalPages={totalTaskPages}
-              loading={loadingTasks}
-              onRefresh={() => fetchTasks(taskPage, taskPerPage, false)}
-              onDelete={handleDeleteTask}
-              onClearAll={handleClearAllTasks}
-              onPageChange={handleTaskPageChange}
-              onPageSizeChange={handleTaskPerPageChange}
-            />
-
-
           </div>
         ) : (
           <div style={{ maxWidth: '1080px', margin: '0 auto' }}>

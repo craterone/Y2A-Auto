@@ -289,6 +289,37 @@ def api_add_task():
         return jsonify({'success': False, 'message': f'服务器内部错误: {str(e)}'}), 500
 
 
+def _enrich_task_display(task, web_app):
+    if not task or not isinstance(task, dict):
+        return task
+    if hasattr(web_app, 'get_partition_name'):
+        try:
+            bili_pid = (
+                task.get('selected_partition_id_bilibili') or
+                task.get('recommended_partition_id_bilibili') or
+                task.get('selected_partition_id') or
+                task.get('recommended_partition_id')
+            )
+            if bili_pid:
+                name = web_app.get_partition_name(bili_pid, 'bilibili')
+                if name:
+                    task['partition_name_bilibili'] = name
+
+            ac_pid = (
+                task.get('selected_partition_id_acfun') or
+                task.get('recommended_partition_id_acfun') or
+                task.get('selected_partition_id') or
+                task.get('recommended_partition_id')
+            )
+            if ac_pid:
+                name = web_app.get_partition_name(ac_pid, 'acfun')
+                if name:
+                    task['partition_name_acfun'] = name
+        except Exception as e:
+            logger.debug(f"解析分区名称异常: {str(e)}")
+    return task
+
+
 @api_bp.route('/tasks', methods=['GET'])
 @api_login_required
 def api_get_tasks():
@@ -302,9 +333,12 @@ def api_get_tasks():
         per_page = request.args.get('per_page', 20, type=int)
         per_page = max(1, min(per_page, 100))  # 限制每页1-100条
         pagination_data = web_app.get_tasks_paginated(page=page, per_page=per_page)
+        tasks = pagination_data.get('tasks', [])
+        for task in tasks:
+            _enrich_task_display(task, web_app)
         return jsonify({
             'success': True,
-            'tasks': pagination_data.get('tasks', []),
+            'tasks': tasks,
             'total': pagination_data.get('total', 0),
             'page': pagination_data.get('page', page),
             'per_page': pagination_data.get('per_page', per_page),
@@ -326,6 +360,7 @@ def api_get_task(task_id):
         task = web_app.get_task(task_id)
         if not task:
             return jsonify({'success': False, 'message': '任务不存在'}), 404
+        _enrich_task_display(task, web_app)
         return jsonify({
             'success': True,
             'task': task
