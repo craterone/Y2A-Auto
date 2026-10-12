@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Pagination } from './Pagination';
 
 const STATUS_MAP = {
   pending: { label: '排队中', color: '#94a3b8', bg: 'rgba(148, 163, 184, 0.15)' },
@@ -16,7 +17,19 @@ const STATUS_MAP = {
   abandoned: { label: '已废弃', color: '#64748b', bg: 'rgba(100, 116, 139, 0.15)' },
 };
 
-export function TaskList({ tasks, total, loading, onRefresh, onDelete, onClearAll }) {
+export function TaskList({
+  tasks,
+  total,
+  page = 1,
+  pageSize = 20,
+  totalPages = 1,
+  loading,
+  onRefresh,
+  onDelete,
+  onClearAll,
+  onPageChange,
+  onPageSizeChange,
+}) {
   const [deletingId, setDeletingId] = useState(null);
   const [isClearing, setIsClearing] = useState(false);
 
@@ -248,6 +261,19 @@ export function TaskList({ tasks, total, loading, onRefresh, onDelete, onClearAl
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* 分页控制栏 */}
+      {tasks.length > 0 && (
+        <Pagination
+          currentPage={page}
+          totalItems={total}
+          pageSize={pageSize}
+          totalPages={totalPages}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+          loading={loading}
+        />
       )}
     </div>
   );

@@ -22,8 +22,23 @@ export function App() {
   // 单视频任务状态
   const [tasks, setTasks] = useState([]);
   const [totalTasks, setTotalTasks] = useState(0);
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPerPage, setTaskPerPage] = useState(20);
+  const [totalTaskPages, setTotalTaskPages] = useState(1);
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 避免轮询与异步回调闭包旧值
+  const taskPageRef = React.useRef(taskPage);
+  const taskPerPageRef = React.useRef(taskPerPage);
+
+  useEffect(() => {
+    taskPageRef.current = taskPage;
+  }, [taskPage]);
+
+  useEffect(() => {
+    taskPerPageRef.current = taskPerPage;
+  }, [taskPerPage]);
 
   // Playlist 监控状态
   const [monitors, setMonitors] = useState([]);
@@ -65,13 +80,21 @@ export function App() {
   }, [showToast]);
 
   // 拉取任务列表
-  const fetchTasks = useCallback(async (silent = false) => {
+  const fetchTasks = useCallback(async (targetPage, targetPerPage, silent = false) => {
+    const p = targetPage !== undefined ? targetPage : taskPageRef.current;
+    const size = targetPerPage !== undefined ? targetPerPage : taskPerPageRef.current;
     if (!silent) setLoadingTasks(true);
     try {
-      const data = await api.getTasks({ page: 1, per_page: 20 });
+      const data = await api.getTasks({ page: p, per_page: size });
       if (data.success) {
         setTasks(data.tasks || []);
-        setTotalTasks(data.total || 0);
+        const total = data.total || 0;
+        setTotalTasks(total);
+        const pages = data.total_pages || Math.max(1, Math.ceil(total / size));
+        setTotalTaskPages(pages);
+        if (data.page && data.page !== p) {
+          setTaskPage(data.page);
+        }
       }
     } catch (err) {
       if (err.status === 401) {
@@ -83,6 +106,18 @@ export function App() {
       if (!silent) setLoadingTasks(false);
     }
   }, [showToast]);
+
+  // 翻页与每页大小修改处理
+  const handleTaskPageChange = (newPage) => {
+    setTaskPage(newPage);
+    fetchTasks(newPage, taskPerPageRef.current, false);
+  };
+
+  const handleTaskPerPageChange = (newSize) => {
+    setTaskPerPage(newSize);
+    setTaskPage(1);
+    fetchTasks(1, newSize, false);
+  };
 
   // 拉取 Playlist 监控配置列表
   const fetchMonitors = useCallback(async (silent = false) => {
@@ -107,7 +142,7 @@ export function App() {
   useEffect(() => {
     checkAuth().then((auth) => {
       if (auth && auth.logged_in) {
-        fetchTasks();
+        fetchTasks(1, taskPerPageRef.current);
         fetchMonitors();
       }
     });
@@ -118,7 +153,7 @@ export function App() {
     if (!authState.loggedIn) return;
     const timer = setInterval(() => {
       if (activeTab === 'tasks') {
-        fetchTasks(true);
+        fetchTasks(taskPageRef.current, taskPerPageRef.current, true);
       } else if (activeTab === 'playlist') {
         fetchMonitors(true);
       }
@@ -133,7 +168,7 @@ export function App() {
       setAuthState((prev) => ({ ...prev, loggedIn: true }));
       setShowLoginModal(false);
       showToast('登录成功，欢迎使用 Y2A-Auto！', 'success');
-      fetchTasks();
+      fetchTasks(1, taskPerPageRef.current);
       fetchMonitors();
     }
   };
@@ -145,6 +180,8 @@ export function App() {
       setAuthState((prev) => ({ ...prev, loggedIn: false }));
       setTasks([]);
       setTotalTasks(0);
+      setTaskPage(1);
+      setTotalTaskPages(1);
       setMonitors([]);
       showToast('已安全退出登录', 'info');
     } catch (err) {
@@ -157,7 +194,9 @@ export function App() {
     const res = await api.createTask(taskPayload);
     if (res.success) {
       showToast(res.message || '任务创建成功！', 'success');
-      fetchTasks(true);
+      // 创建成功后自动切回第1页以便查看最新任务
+      setTaskPage(1);
+      fetchTasks(1, taskPerPageRef.current, true);
     }
     return res;
   };
@@ -168,7 +207,13 @@ export function App() {
       const res = await api.deleteTask(taskId, true);
       if (res.success) {
         showToast(res.message || '任务已成功删除', 'success');
-        fetchTasks(true);
+        const currentPage = taskPageRef.current;
+        const currentSize = taskPerPageRef.current;
+        const targetPage = (tasks.length <= 1 && currentPage > 1) ? currentPage - 1 : currentPage;
+        if (targetPage !== currentPage) {
+          setTaskPage(targetPage);
+        }
+        fetchTasks(targetPage, currentSize, true);
       }
       return res;
     } catch (err) {
@@ -183,7 +228,9 @@ export function App() {
       const res = await api.clearAllTasks(true);
       if (res.success) {
         showToast(res.message || '所有任务已成功清空', 'success');
-        fetchTasks(false);
+        setTaskPage(1);
+        setTotalTaskPages(1);
+        fetchTasks(1, taskPerPageRef.current, false);
       }
       return res;
     } catch (err) {
@@ -229,7 +276,7 @@ export function App() {
         activeTab={activeTab}
         onTabChange={(tab) => {
           setActiveTab(tab);
-          if (tab === 'tasks') fetchTasks();
+          if (tab === 'tasks') fetchTasks(taskPageRef.current, taskPerPageRef.current);
           if (tab === 'playlist') fetchMonitors();
         }}
       />
@@ -249,10 +296,15 @@ export function App() {
             <TaskList
               tasks={tasks}
               total={totalTasks}
+              page={taskPage}
+              pageSize={taskPerPage}
+              totalPages={totalTaskPages}
               loading={loadingTasks}
-              onRefresh={() => fetchTasks(false)}
+              onRefresh={() => fetchTasks(taskPage, taskPerPage, false)}
               onDelete={handleDeleteTask}
               onClearAll={handleClearAllTasks}
+              onPageChange={handleTaskPageChange}
+              onPageSizeChange={handleTaskPerPageChange}
             />
 
 
