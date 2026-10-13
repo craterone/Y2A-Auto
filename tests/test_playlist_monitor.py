@@ -246,6 +246,123 @@ class TestPlaylistMonitor(unittest.TestCase):
         scheduled_job_id = processor.schedule_task(t2)
         self.assertIsNone(scheduled_job_id, "当已有任务处于运行态且并发限制为1时，不应允许调度第二个任务！")
 
+    def test_07_cooling_interval_restriction(self):
+        """测试防风控任务执行间隔冷却限制与调度拦截"""
+        from modules.playlist_monitor import (
+            get_playlist_interval_cooling_info,
+            update_playlist_last_task_completed
+        )
+        test_pid = "PL_Cooling_Interval_Test"
+        with get_db_connection() as conn:
+            conn.execute("DELETE FROM tasks WHERE playlist_id = ?", (test_pid,))
+            conn.execute("DELETE FROM playlist_monitors WHERE playlist_id = ?", (test_pid,))
+            conn.commit()
+
+        # 创建任务间隔为 30 分钟的监控
+        mon = playlist_monitor_manager.create_monitor(
+            playlist_id_input=test_pid,
+            check_interval_minutes=30,
+            max_concurrency=2,
+            task_interval_minutes=30,
+            upload_target='bilibili',
+            custom_title="冷却间隔测试"
+        )
+        mon_id = mon['id']
+
+        # 初始未完成任何任务时，不应处于冷却
+        is_cooling, rem = get_playlist_interval_cooling_info(monitor_id=mon_id)
+        self.assertFalse(is_cooling)
+        self.assertEqual(rem, 0)
+
+        # 模拟刚才刚刚完成一个任务
+        update_playlist_last_task_completed(monitor_id=mon_id)
+
+        # 此时应处于冷却中，剩余秒数应在 1700~1800 之间 (30分钟 = 1800秒)
+        is_cooling, rem = get_playlist_interval_cooling_info(monitor_id=mon_id)
+        self.assertTrue(is_cooling)
+        self.assertGreater(rem, 1750)
+        self.assertLessEqual(rem, 1800)
+
+        # 添加新任务并尝试自动调度，验证因冷却被拦截
+        t = add_task("https://www.youtube.com/watch?v=cool_vid_1", playlist_id=test_pid, playlist_monitor_id=mon_id)
+        from modules.task_manager import get_global_task_processor
+        processor = get_global_task_processor({})
+
+        job_id = processor.schedule_task(t, ignore_interval=False)
+        self.assertIsNone(job_id, "处于冷却期且未忽略间隔时，不应允许调度执行！")
+
+    @patch.object(playlist_monitor_manager, '_run_check_async')
+    @patch.object(playlist_monitor_manager, 'fetch_playlist_details', return_value={'title': '分批导入测试', 'description': '', 'channel_title': '', 'thumbnail_url': ''})
+    @patch.object(playlist_monitor_manager, '_get_youtube_client')
+    def test_08_batch_import_and_order(self, mock_get_client, mock_fetch_details, mock_run_async):
+        """测试单次导入上限截断与排序功能"""
+        test_pid = "PL_Batch_Import_Test"
+        with get_db_connection() as conn:
+            conn.execute("DELETE FROM tasks WHERE playlist_id = ?", (test_pid,))
+            conn.execute("DELETE FROM playlist_monitors WHERE playlist_id = ?", (test_pid,))
+            conn.commit()
+
+        # Mock YouTube API 返回 4 个视频，发布时间从 2024-01 到 2024-04
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        mock_items = [
+            {
+                'snippet': {'title': 'Video 4', 'publishedAt': '2024-04-01T00:00:00Z'},
+                'contentDetails': {'videoId': 'vid_04', 'videoPublishedAt': '2024-04-01T00:00:00Z'}
+            },
+            {
+                'snippet': {'title': 'Video 1', 'publishedAt': '2024-01-01T00:00:00Z'},
+                'contentDetails': {'videoId': 'vid_01', 'videoPublishedAt': '2024-01-01T00:00:00Z'}
+            },
+            {
+                'snippet': {'title': 'Video 3', 'publishedAt': '2024-03-01T00:00:00Z'},
+                'contentDetails': {'videoId': 'vid_03', 'videoPublishedAt': '2024-03-01T00:00:00Z'}
+            },
+            {
+                'snippet': {'title': 'Video 2', 'publishedAt': '2024-02-01T00:00:00Z'},
+                'contentDetails': {'videoId': 'vid_02', 'videoPublishedAt': '2024-02-01T00:00:00Z'}
+            },
+        ]
+        mock_resp = {'items': mock_items, 'nextPageToken': None}
+        mock_req = MagicMock()
+        mock_req.execute.return_value = mock_resp
+        mock_client.playlistItems().list.return_value = mock_req
+
+        # 创建监控：max_import_per_check=2, import_order='asc' (正序，旧视频优先)
+        mon = playlist_monitor_manager.create_monitor(
+            playlist_id_input=test_pid,
+            check_interval_minutes=30,
+            max_concurrency=1,
+            max_import_per_check=2,
+            import_order='asc',
+            upload_target='bilibili',
+            custom_title="分批导入测试"
+        )
+        mon_id = mon['id']
+
+        # 执行首次检测
+        result = playlist_monitor_manager.check_playlist(mon_id, auto_add=True)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['new_tasks_count'], 2)
+        self.assertEqual(result['remaining_to_import'], 2)
+
+        # 检查入库的任务是按正序最旧的 vid_01 和 vid_02
+        tasks_res = playlist_monitor_manager.get_playlist_tasks(mon_id, order='asc')
+        self.assertEqual(tasks_res['total'], 2)
+        task_urls = [t['youtube_url'] for t in tasks_res['tasks']]
+        self.assertIn("https://www.youtube.com/watch?v=vid_01", task_urls)
+        self.assertIn("https://www.youtube.com/watch?v=vid_02", task_urls)
+
+        # 再次执行检测（模拟下一个轮询周期），应继续导入剩余的 vid_03 和 vid_04
+        result2 = playlist_monitor_manager.check_playlist(mon_id, auto_add=True)
+        self.assertTrue(result2['success'])
+        self.assertEqual(result2['new_tasks_count'], 2)
+        self.assertEqual(result2['remaining_to_import'], 0)
+
+        tasks_res2 = playlist_monitor_manager.get_playlist_tasks(mon_id, order='asc')
+        self.assertEqual(tasks_res2['total'], 4)
+
 
 if __name__ == '__main__':
     unittest.main()

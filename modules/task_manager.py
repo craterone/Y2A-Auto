@@ -1647,6 +1647,15 @@ def update_task(task_id, silent=False, **kwargs):
                             ),
                         )
                     )
+                    if filtered_kwargs.get('status') == TASK_STATES['COMPLETED']:
+                        p_mon_id = merged_task.get('playlist_monitor_id')
+                        p_id = merged_task.get('playlist_id')
+                        if p_mon_id or p_id:
+                            try:
+                                from modules.playlist_monitor import update_playlist_last_task_completed
+                                update_playlist_last_task_completed(p_mon_id, p_id)
+                            except Exception as ex:
+                                logger.debug(f"更新播放列表完成时间失败: {ex}")
                 if not silent:  # 只有非静默模式才记录到主日志
                     logger.info(f"任务 {task_id} 更新成功: {filtered_kwargs}")
                 return True
@@ -2404,12 +2413,13 @@ class TaskProcessor:
         finally:
             logger.info("任务处理器已关闭")
     
-    def schedule_task(self, task_id):
+    def schedule_task(self, task_id, ignore_interval=False):
         """
         调度任务处理
         
         Args:
             task_id: 任务ID
+            ignore_interval: 是否忽略播放列表防风控执行间隔（如用户手动点击立即开始时为True）
         
         Returns:
             job_id: 调度作业ID
@@ -2486,6 +2496,19 @@ class TaskProcessor:
                             f"任务 {task_id[:8]} 所属 Playlist 当前运行数 {cur_p_running} 已达到配置最大并发 {p_max}，暂不调度启动"
                         )
                         return None
+
+                    # 检查该任务所属 Playlist 是否处于防风控任务执行间隔冷却中
+                    if not ignore_interval:
+                        try:
+                            from modules.playlist_monitor import get_playlist_interval_cooling_info
+                            is_cooling, rem_sec = get_playlist_interval_cooling_info(p_mon_id, p_id)
+                            if is_cooling:
+                                logger.info(
+                                    f"任务 {task_id[:8]} 所属 Playlist 处于防风控执行间隔冷却期，还需等待 {rem_sec} 秒 ({round(rem_sec / 60, 1)} 分钟)，暂不调度"
+                                )
+                                return None
+                        except Exception as e:
+                            logger.debug(f"检查播放列表冷却失败: {e}")
 
                 global task_semaphore
                 if task_semaphore is None:
@@ -2943,11 +2966,24 @@ class TaskProcessor:
                         )
                         continue
 
+                    # 检查该任务所属 Playlist 是否处于防风控任务执行间隔冷却中
+                    try:
+                        from modules.playlist_monitor import get_playlist_interval_cooling_info
+                        is_cooling, rem_sec = get_playlist_interval_cooling_info(cand_mon_id, cand_pid)
+                        if is_cooling:
+                            logger.info(
+                                f"任务 {cand_task['id'][:8]} 所属播放列表 ({cand_mon_id or cand_pid}) "
+                                f"处于防风控执行间隔冷却中，还需等待 {rem_sec} 秒 ({round(rem_sec / 60, 1)} 分钟)"
+                            )
+                            continue
+                    except Exception as e:
+                        logger.debug(f"检查播放列表冷却失败: {e}")
+
                 next_task = cand_task
                 break
 
             if not next_task:
-                logger.info("当前所有 pending 任务均处于所属 Playlist 最大并发限制中，暂无任务启动")
+                logger.info("当前所有 pending 任务均处于所属 Playlist 最大并发限制或防风控冷却中，暂无任务启动")
                 return
             
             logger.info(f"发现pending任务，准备启动: {next_task['id'][:8]}... ({next_task.get('youtube_url', 'Unknown URL')[-30:]})")

@@ -79,6 +79,10 @@ class PlaylistMonitorManager:
                     bilibili_season_id INTEGER,
                     bilibili_section_id INTEGER,
                     bilibili_season_title TEXT,
+                    task_interval_minutes INTEGER DEFAULT 15,
+                    max_import_per_check INTEGER DEFAULT 10,
+                    import_order TEXT DEFAULT 'asc',
+                    last_task_completed_at TIMESTAMP,
                     enabled BOOLEAN DEFAULT 1,
                     last_checked_at TIMESTAMP,
                     last_check_status TEXT,
@@ -123,6 +127,18 @@ class PlaylistMonitorManager:
             if 'bilibili_season_title' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN bilibili_season_title TEXT")
                 logger.info("数据库升级：playlist_monitors 添加 bilibili_season_title 字段")
+            if 'task_interval_minutes' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN task_interval_minutes INTEGER DEFAULT 15")
+                logger.info("数据库升级：playlist_monitors 添加 task_interval_minutes 字段")
+            if 'max_import_per_check' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN max_import_per_check INTEGER DEFAULT 10")
+                logger.info("数据库升级：playlist_monitors 添加 max_import_per_check 字段")
+            if 'import_order' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN import_order TEXT DEFAULT 'asc'")
+                logger.info("数据库升级：playlist_monitors 添加 import_order 字段")
+            if 'last_task_completed_at' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN last_task_completed_at TIMESTAMP")
+                logger.info("数据库升级：playlist_monitors 添加 last_task_completed_at 字段")
             cursor.execute("UPDATE playlist_monitors SET upload_target = 'bilibili' WHERE upload_target = 'acfun' OR upload_target IS NULL")
 
             conn.commit()
@@ -192,7 +208,10 @@ class PlaylistMonitorManager:
         custom_description: Optional[str] = None,
         bilibili_season_id: Optional[int] = None,
         bilibili_section_id: Optional[int] = None,
-        bilibili_season_title: Optional[str] = None
+        bilibili_season_title: Optional[str] = None,
+        task_interval_minutes: int = 15,
+        max_import_per_check: int = 10,
+        import_order: str = 'asc'
     ) -> Dict[str, Any]:
         """
         创建新的 Playlist 监控
@@ -235,6 +254,9 @@ class PlaylistMonitorManager:
         safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
         safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
         safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
+        safe_task_interval = max(0, int(task_interval_minutes if task_interval_minutes is not None else 15))
+        safe_max_import = max(0, int(max_import_per_check if max_import_per_check is not None else 10))
+        safe_import_order = 'desc' if str(import_order or '').lower() == 'desc' else 'asc'
 
         conn = get_db_connection()
         try:
@@ -244,11 +266,13 @@ class PlaylistMonitorManager:
                     playlist_id, title, description, channel_title, thumbnail_url,
                     check_interval_minutes, max_concurrency, upload_target, enabled,
                     auto_upload, custom_description, bilibili_season_id, bilibili_section_id,
-                    bilibili_season_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bilibili_season_title, task_interval_minutes, max_import_per_check,
+                    import_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (clean_playlist_id, title, description, channel_title, thumbnail_url,
                   interval, concurrency, target, 1 if enabled else 0,
-                  is_auto_upload, clean_custom_desc, safe_season_id, safe_section_id, safe_season_title))
+                  is_auto_upload, clean_custom_desc, safe_season_id, safe_section_id,
+                  safe_season_title, safe_task_interval, safe_max_import, safe_import_order))
             monitor_id = cursor.lastrowid
             conn.commit()
         finally:
@@ -370,6 +394,21 @@ class PlaylistMonitorManager:
             fields.append('bilibili_season_title = ?')
             val = str(update_data['bilibili_season_title'] or '').strip()
             params.append(val if val else None)
+
+        if 'task_interval_minutes' in update_data:
+            fields.append('task_interval_minutes = ?')
+            val = update_data['task_interval_minutes']
+            params.append(max(0, int(val)) if val is not None else 15)
+
+        if 'max_import_per_check' in update_data:
+            fields.append('max_import_per_check = ?')
+            val = update_data['max_import_per_check']
+            params.append(max(0, int(val)) if val is not None else 10)
+
+        if 'import_order' in update_data:
+            fields.append('import_order = ?')
+            val = 'desc' if str(update_data['import_order'] or '').lower() == 'desc' else 'asc'
+            params.append(val)
 
         # 投稿目标强制保持并默认固定为 bilibili
         fields.append('upload_target = ?')
@@ -539,13 +578,35 @@ class PlaylistMonitorManager:
                 finally:
                     u_conn.close()
 
-            logger.info(f"Playlist {playlist_id} 发现 {len(new_videos)} 个新视频需要入库")
+            # 读取排序与单次导入上限配置
+            max_import = int(monitor.get('max_import_per_check') if monitor.get('max_import_per_check') is not None else 10)
+            import_order = str(monitor.get('import_order') or 'asc').lower().strip()
+
+            # 按发布时间排序：'asc' 优先从最旧发布视频导入（适合连载/第一集优先）；'desc' 从最新发布视频导入
+            def _get_pub_key(item):
+                return item.get('published_at') or ''
+
+            if import_order == 'desc':
+                new_videos.sort(key=_get_pub_key, reverse=True)
+            else:
+                new_videos.sort(key=_get_pub_key, reverse=False)
+
+            total_new_candidates = len(new_videos)
+            logger.info(f"Playlist {playlist_id} 发现 {total_new_candidates} 个新视频待入库 (排序: {import_order}, 单次上限: {max_import})")
+
+            # 若配置了单次导入上限（> 0），则截取前 N 个导入，其余留待后续检测周期继续平滑导入
+            videos_to_import = new_videos
+            remaining_pending_import = 0
+            if max_import > 0 and len(new_videos) > max_import:
+                videos_to_import = new_videos[:max_import]
+                remaining_pending_import = len(new_videos) - max_import
+                logger.info(f"Playlist {playlist_id} 超过单次导入限制 {max_import}，本次截取前 {len(videos_to_import)} 个入库，剩余 {remaining_pending_import} 个待下次导入")
 
             # 4. 入库新任务（注意：绝不持有未提交连接，各操作独立短事务完成）
             added_count = 0
             history_records = []
-            if auto_add and new_videos:
-                for v in new_videos:
+            if auto_add and videos_to_import:
+                for v in videos_to_import:
                     video_url = f"https://www.youtube.com/watch?v={v['video_id']}"
                     task_id = add_task(
                         video_url,
@@ -563,7 +624,7 @@ class PlaylistMonitorManager:
                         history_records.append((monitor_id, v['video_id'], v['title'], v['published_at'], task_id))
                         added_count += 1
 
-                # 任务添加完成后，批量写入 history 表
+                # 任务添加完成后，批量写入 history 表（仅记录本次实际导入的任务，未入库的保持待导入状态）
                 if history_records:
                     h_conn = get_db_connection()
                     try:
@@ -577,7 +638,10 @@ class PlaylistMonitorManager:
                         h_conn.close()
 
             # 5. 更新检测状态与视频总数
-            succ_msg = f"检测完成：播放列表共 {total_found} 个视频，本次新增 {added_count} 个任务"
+            if remaining_pending_import > 0:
+                succ_msg = f"检测完成：播放列表共 {total_found} 个视频，发现 {total_new_candidates} 个新视频，本次导入前 {added_count} 个任务（剩余 {remaining_pending_import} 个将在后续周期自动导入）"
+            else:
+                succ_msg = f"检测完成：播放列表共 {total_found} 个视频，本次新增 {added_count} 个任务"
             self._record_check_status(monitor_id, 'success', succ_msg, total_videos_found=total_found)
 
             return {
@@ -585,6 +649,7 @@ class PlaylistMonitorManager:
                 'message': succ_msg,
                 'new_tasks_count': added_count,
                 'total_found': total_found,
+                'remaining_to_import': remaining_pending_import,
             }
 
         except Exception as e:
@@ -713,6 +778,10 @@ class PlaylistMonitorManager:
                     'playlist_id': monitor['playlist_id'],
                     'max_concurrency': monitor['max_concurrency'],
                     'check_interval_minutes': monitor['check_interval_minutes'],
+                    'task_interval_minutes': monitor.get('task_interval_minutes', 15),
+                    'max_import_per_check': monitor.get('max_import_per_check', 10),
+                    'import_order': monitor.get('import_order', 'asc'),
+                    'last_task_completed_at': monitor.get('last_task_completed_at'),
                 },
                 'stats': monitor.get('task_stats', {}),
             }
@@ -802,3 +871,111 @@ def get_playlist_max_concurrency(monitor_id: Optional[int] = None, playlist_id: 
     except Exception as e:
         logger.debug(f"查询 playlist 并发限制失败: {e}")
     return 1
+
+
+def update_playlist_last_task_completed(monitor_id: Optional[int] = None, playlist_id: Optional[str] = None):
+    """
+    当属于该播放列表的任务完成时调用，记录任务完成时间（用于防风控任务执行间隔计算）
+    """
+    if not monitor_id and not playlist_id:
+        return
+    try:
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            if monitor_id:
+                cursor.execute('''
+                    UPDATE playlist_monitors
+                    SET last_task_completed_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (now_str, monitor_id))
+            elif playlist_id:
+                cursor.execute('''
+                    UPDATE playlist_monitors
+                    SET last_task_completed_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE playlist_id = ?
+                ''', (now_str, playlist_id))
+            conn.commit()
+            logger.info(f"已更新播放列表 (monitor_id={monitor_id}, playlist_id={playlist_id}) 的最后任务完成时间为: {now_str}")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"更新播放列表最后任务完成时间失败: {e}")
+
+
+def get_playlist_interval_cooling_info(monitor_id: Optional[int] = None, playlist_id: Optional[str] = None) -> Tuple[bool, int]:
+    """
+    检查指定播放列表是否处于防风控任务执行间隔冷却中。
+    返回 (is_cooling, remaining_seconds)。
+    若处于冷却期，is_cooling 为 True，remaining_seconds 为剩余秒数。
+    """
+    if not monitor_id and not playlist_id:
+        return False, 0
+
+    try:
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            if monitor_id:
+                cursor.execute('''
+                    SELECT id, playlist_id, task_interval_minutes, last_task_completed_at 
+                    FROM playlist_monitors WHERE id = ?
+                ''', (monitor_id,))
+            else:
+                cursor.execute('''
+                    SELECT id, playlist_id, task_interval_minutes, last_task_completed_at 
+                    FROM playlist_monitors WHERE playlist_id = ?
+                ''', (playlist_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False, 0
+
+            m_id, p_id, interval_minutes, last_completed_str = row[0], row[1], row[2], row[3]
+            interval_min = int(interval_minutes) if interval_minutes is not None else 15
+            if interval_min <= 0:
+                return False, 0
+
+            # 若 last_task_completed_at 字段暂无记录，兜底查询该播放列表已完成任务的最大更新时间
+            last_dt = None
+            if last_completed_str:
+                try:
+                    last_clean = str(last_completed_str).replace('T', ' ').split('.')[0]
+                    last_dt = datetime.strptime(last_clean, '%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    pass
+
+            if not last_dt:
+                cursor.execute('''
+                    SELECT MAX(updated_at) FROM tasks 
+                    WHERE (playlist_monitor_id = ? OR playlist_id = ?) AND status = 'completed'
+                ''', (m_id, p_id))
+                t_row = cursor.fetchone()
+                if t_row and t_row[0]:
+                    try:
+                        t_clean = str(t_row[0]).replace('T', ' ').split('.')[0]
+                        last_dt = datetime.strptime(t_clean, '%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        pass
+
+            if not last_dt:
+                return False, 0
+
+            now = datetime.now()
+            elapsed_seconds = (now - last_dt).total_seconds()
+            if elapsed_seconds < 0:
+                elapsed_seconds = 0
+
+            cooling_needed = interval_min * 60
+            if elapsed_seconds < cooling_needed:
+                remaining_seconds = int(cooling_needed - elapsed_seconds)
+                return True, remaining_seconds
+
+            return False, 0
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug(f"查询播放列表任务间隔冷却信息失败: {e}")
+        return False, 0

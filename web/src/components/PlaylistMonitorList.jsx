@@ -11,6 +11,48 @@ export function PlaylistMonitorList({
   const [checkingIds, setCheckingIds] = useState(new Set());
   const [deletingIds, setDeletingIds] = useState(new Set());
   const [togglingIds, setTogglingIds] = useState(new Set());
+  const [editingMonitor, setEditingMonitor] = useState(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  const handleOpenEdit = (monitor) => {
+    setEditingMonitor({
+      id: monitor.id,
+      title: monitor.title || '',
+      check_interval_minutes: monitor.check_interval_minutes || 30,
+      max_concurrency: monitor.max_concurrency || 1,
+      task_interval_minutes: monitor.task_interval_minutes !== undefined ? monitor.task_interval_minutes : 15,
+      max_import_per_check: monitor.max_import_per_check !== undefined ? monitor.max_import_per_check : 10,
+      import_order: monitor.import_order || 'asc',
+      auto_upload: monitor.auto_upload !== false && monitor.auto_upload !== 0,
+      custom_description: monitor.custom_description || '',
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingMonitor) return;
+    setIsSavingEdit(true);
+    try {
+      const res = await api.updatePlaylistMonitor(editingMonitor.id, {
+        title: editingMonitor.title,
+        check_interval_minutes: parseInt(editingMonitor.check_interval_minutes, 10) || 30,
+        max_concurrency: parseInt(editingMonitor.max_concurrency, 10) || 1,
+        task_interval_minutes: parseInt(editingMonitor.task_interval_minutes, 10) || 0,
+        max_import_per_check: parseInt(editingMonitor.max_import_per_check, 10) || 0,
+        import_order: editingMonitor.import_order,
+        auto_upload: editingMonitor.auto_upload,
+        custom_description: editingMonitor.custom_description,
+      });
+      if (res.success) {
+        showToast('播放列表监控配置已更新', 'success');
+        setEditingMonitor(null);
+        onRefresh();
+      }
+    } catch (err) {
+      showToast(err.message || '更新配置失败', 'error');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   // 立即触发检测
   const handleCheckNow = async (monitor) => {
@@ -239,8 +281,18 @@ export function PlaylistMonitorList({
                   </div>
                 </div>
 
-                {/* 状态切换与删除 */}
+                {/* 状态切换、配置与删除 */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => handleOpenEdit(m)}
+                    style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+                    title="修改监控与防风控参数"
+                  >
+                    ⚙️ 配置
+                  </button>
+
                   <button
                     type="button"
                     className="btn btn-secondary"
@@ -282,8 +334,31 @@ export function PlaylistMonitorList({
                 </div>
 
                 <div>
-                  <span style={{ color: 'var(--text-dim)', display: 'block', fontSize: '0.72rem' }}>⚡ 最大并发 (Task)</span>
-                  <strong style={{ color: '#f59e0b' }}>{m.max_concurrency} 个同时运行</strong>
+                  <span style={{ color: 'var(--text-dim)', display: 'block', fontSize: '0.72rem' }}>⚡ 最大并发</span>
+                  <strong style={{ color: '#f59e0b' }}>{m.max_concurrency} 个</strong>
+                </div>
+
+                <div>
+                  <span style={{ color: 'var(--text-dim)', display: 'block', fontSize: '0.72rem' }}>
+                    🛡️ 任务间隔 <span style={{ color: '#facc15' }}>(防风控)</span>
+                  </span>
+                  <strong style={{ color: '#facc15' }}>
+                    {m.task_interval_minutes !== undefined && m.task_interval_minutes !== null ? `${m.task_interval_minutes} 分钟` : '15 分钟'}
+                  </strong>
+                </div>
+
+                <div>
+                  <span style={{ color: 'var(--text-dim)', display: 'block', fontSize: '0.72rem' }}>📦 单次导入</span>
+                  <strong style={{ color: '#a78bfa' }}>
+                    {m.max_import_per_check ? `${m.max_import_per_check} 个` : '全量'}
+                  </strong>
+                </div>
+
+                <div>
+                  <span style={{ color: 'var(--text-dim)', display: 'block', fontSize: '0.72rem' }}>↕️ 导入顺序</span>
+                  <strong style={{ color: '#94a3b8' }}>
+                    {m.import_order === 'desc' ? '最新优先' : '从旧到新'}
+                  </strong>
                 </div>
 
                 <div>
@@ -373,6 +448,206 @@ export function PlaylistMonitorList({
           );
         })}
       </div>
+
+      {/* 参数修改配置弹窗 Modal */}
+      {Boolean(editingMonitor) && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          padding: '20px',
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '560px',
+            maxHeight: '90vh',
+            overflowY: 'auto',
+            padding: '24px',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>
+                ⚙️ 修改 Playlist 监控与防风控配置
+              </h3>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setEditingMonitor(null)}
+                style={{ padding: '4px 8px', fontSize: '0.8rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.825rem', marginBottom: '4px', color: 'var(--text-dim)' }}>
+                  自定义名称 / 备注
+                </label>
+                <input
+                  type="text"
+                  className="input-field"
+                  value={editingMonitor.title}
+                  onChange={(e) => setEditingMonitor({ ...editingMonitor, title: e.target.value })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.825rem', marginBottom: '4px', color: 'var(--text-dim)' }}>
+                    ⏱️ 检测周期 (分钟)
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    className="input-field"
+                    value={editingMonitor.check_interval_minutes}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, check_interval_minutes: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.825rem', marginBottom: '4px', color: 'var(--text-dim)' }}>
+                    ⚡ 最大并发 (Task)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    className="input-field"
+                    value={editingMonitor.max_concurrency}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, max_concurrency: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </div>
+
+              {/* 防风控关键设置块 */}
+              <div style={{
+                background: 'rgba(234, 179, 8, 0.05)',
+                border: '1px solid rgba(234, 179, 8, 0.2)',
+                borderRadius: '8px',
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+              }}>
+                <div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.825rem', marginBottom: '4px', fontWeight: 500, color: '#facc15' }}>
+                    <span>🛡️ 任务执行间隔 (分钟，防 B 站风控)</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1440"
+                    className="input-field"
+                    value={editingMonitor.task_interval_minutes}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, task_interval_minutes: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '2px', display: 'block' }}>
+                    上一个任务完成/投稿后冷却多长时间再执行下一个（建议 15~30 分钟，0 为无间隔）
+                  </span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.825rem', marginBottom: '4px', color: 'var(--text-dim)' }}>
+                      📦 单次导入上限 (个)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="500"
+                      className="input-field"
+                      value={editingMonitor.max_import_per_check}
+                      onChange={(e) => setEditingMonitor({ ...editingMonitor, max_import_per_check: e.target.value })}
+                      style={{ width: '100%' }}
+                    />
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '2px', display: 'block' }}>
+                      0 为不限制/全量导入
+                    </span>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.825rem', marginBottom: '4px', color: 'var(--text-dim)' }}>
+                      ↕️ 导入视频顺序
+                    </label>
+                    <select
+                      className="input-field"
+                      value={editingMonitor.import_order}
+                      onChange={(e) => setEditingMonitor({ ...editingMonitor, import_order: e.target.value })}
+                      style={{ width: '100%', height: '36px' }}
+                    >
+                      <option value="asc">正序 (从旧到新)</option>
+                      <option value="desc">倒序 (最新优先)</option>
+                    </select>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '2px', display: 'block' }}>
+                      首集优先或最新优先
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={editingMonitor.auto_upload}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, auto_upload: e.target.checked })}
+                    style={{ width: '16px', height: '16px' }}
+                  />
+                  <span>🚀 自动发布投稿到 Bilibili</span>
+                </label>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.825rem', marginBottom: '4px', color: 'var(--text-dim)' }}>
+                  统一投稿简介 (可选覆盖)
+                </label>
+                <textarea
+                  className="input-field"
+                  rows={3}
+                  value={editingMonitor.custom_description}
+                  onChange={(e) => setEditingMonitor({ ...editingMonitor, custom_description: e.target.value })}
+                  style={{ width: '100%', resize: 'vertical' }}
+                  placeholder="留空则使用视频原生简介或AI翻译简介"
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEditingMonitor(null)}
+                  disabled={isSavingEdit}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveEdit}
+                  disabled={isSavingEdit}
+                >
+                  {isSavingEdit ? '保存中...' : '💾 保存修改'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

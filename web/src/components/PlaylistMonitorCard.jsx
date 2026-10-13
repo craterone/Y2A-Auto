@@ -5,6 +5,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [playlistId, setPlaylistId] = useState('');
   const [checkInterval, setCheckInterval] = useState(30);
   const [maxConcurrency, setMaxConcurrency] = useState(1);
+  const [taskIntervalMinutes, setTaskIntervalMinutes] = useState(15);
+  const [maxImportPerCheck, setMaxImportPerCheck] = useState(10);
+  const [importOrder, setImportOrder] = useState('asc');
   const [autoUpload, setAutoUpload] = useState(true);
   const [customDescription, setCustomDescription] = useState('');
   const [customTitle, setCustomTitle] = useState('');
@@ -91,6 +94,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
       return;
     }
 
+    const taskInterval = parseInt(taskIntervalMinutes, 10);
+    const maxImport = parseInt(maxImportPerCheck, 10);
+
     setIsSubmitting(true);
     try {
       const matchedSeason = seasons.find((s) => String(s.season_id) === String(selectedSeasonId));
@@ -108,6 +114,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         bilibili_season_id: matchedSeason ? matchedSeason.season_id : undefined,
         bilibili_section_id: firstSection ? firstSection.section_id : undefined,
         bilibili_season_title: matchedSeason ? matchedSeason.title : undefined,
+        task_interval_minutes: isNaN(taskInterval) ? 15 : Math.max(0, taskInterval),
+        max_import_per_check: isNaN(maxImport) ? 10 : Math.max(0, maxImport),
+        import_order: importOrder === 'desc' ? 'desc' : 'asc',
       });
 
       if (res.success) {
@@ -120,6 +129,9 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         setPreviewData(null);
         setCheckInterval(30);
         setMaxConcurrency(1);
+        setTaskIntervalMinutes(15);
+        setMaxImportPerCheck(10);
+        setImportOrder('asc');
         if (onMonitorCreated) {
           onMonitorCreated(res.monitor);
         }
@@ -297,6 +309,79 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
             </div>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
               播放列表新视频将默认发布投稿至 B站
+            </span>
+          </div>
+        </div>
+
+        {/* 防风控与分批导入设置 */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: '16px',
+          marginBottom: '20px',
+          padding: '14px 16px',
+          background: 'rgba(234, 179, 8, 0.04)',
+          borderRadius: '8px',
+          border: '1px solid rgba(234, 179, 8, 0.15)'
+        }}>
+          {/* 任务执行间隔 */}
+          <div className="form-group">
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 500, marginBottom: '6px' }}>
+              <span>🛡️ 任务执行间隔 (分钟)</span>
+              <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.2)', color: '#facc15', fontSize: '0.65rem', padding: '1px 5px' }}>防风控</span>
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="1440"
+              className="input-field"
+              value={taskIntervalMinutes}
+              onChange={(e) => setTaskIntervalMinutes(e.target.value)}
+              disabled={isSubmitting}
+              style={{ width: '100%' }}
+            />
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+              上一任务完成后冷却指定时间再执行下一个（推荐 15~30 分钟，0 为不间隔）
+            </span>
+          </div>
+
+          {/* 单次导入上限 */}
+          <div className="form-group">
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '6px' }}>
+              📦 单次检测导入上限 (个)
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="500"
+              className="input-field"
+              value={maxImportPerCheck}
+              onChange={(e) => setMaxImportPerCheck(e.target.value)}
+              disabled={isSubmitting}
+              style={{ width: '100%' }}
+            />
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+              单次最多导入的任务数（默认 10，0 为全量导入），剩余视频后续轮询分批导入
+            </span>
+          </div>
+
+          {/* 导入顺序 */}
+          <div className="form-group">
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '6px' }}>
+              ↕️ 导入视频顺序
+            </label>
+            <select
+              className="input-field"
+              value={importOrder}
+              onChange={(e) => setImportOrder(e.target.value)}
+              disabled={isSubmitting}
+              style={{ width: '100%', height: '38px', cursor: 'pointer' }}
+            >
+              <option value="asc">正序：按发布时间从旧到新 (推荐，适合系列/第1集优先)</option>
+              <option value="desc">倒序：按发布时间从新到旧 (最新视频优先)</option>
+            </select>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+              当发现多个新视频时优先入库的顺序
             </span>
           </div>
         </div>
