@@ -20,7 +20,7 @@ export function PlaylistMonitorList({
       title: monitor.title || '',
       check_interval_minutes: monitor.check_interval_minutes || 30,
       max_concurrency: monitor.max_concurrency || 1,
-      task_interval_minutes: monitor.task_interval_minutes !== undefined ? monitor.task_interval_minutes : 15,
+      task_interval_minutes: monitor.task_interval_minutes !== undefined ? monitor.task_interval_minutes : 30,
       max_import_per_check: monitor.max_import_per_check !== undefined ? monitor.max_import_per_check : 10,
       import_order: monitor.import_order || 'asc',
       auto_upload: monitor.auto_upload !== false && monitor.auto_upload !== 0,
@@ -343,7 +343,7 @@ export function PlaylistMonitorList({
                     🛡️ 任务间隔 <span style={{ color: '#facc15' }}>(防风控)</span>
                   </span>
                   <strong style={{ color: '#facc15' }}>
-                    {m.task_interval_minutes !== undefined && m.task_interval_minutes !== null ? `${m.task_interval_minutes} 分钟` : '15 分钟'}
+                    {m.task_interval_minutes !== undefined && m.task_interval_minutes !== null ? `${m.task_interval_minutes} 分钟` : '30 分钟'}
                   </strong>
                 </div>
 

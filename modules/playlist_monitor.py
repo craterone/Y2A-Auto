@@ -79,7 +79,7 @@ class PlaylistMonitorManager:
                     bilibili_season_id INTEGER,
                     bilibili_section_id INTEGER,
                     bilibili_season_title TEXT,
-                    task_interval_minutes INTEGER DEFAULT 15,
+                    task_interval_minutes INTEGER DEFAULT 30,
                     max_import_per_check INTEGER DEFAULT 10,
                     import_order TEXT DEFAULT 'asc',
                     last_task_completed_at TIMESTAMP,
@@ -128,7 +128,7 @@ class PlaylistMonitorManager:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN bilibili_season_title TEXT")
                 logger.info("数据库升级：playlist_monitors 添加 bilibili_season_title 字段")
             if 'task_interval_minutes' not in existing_columns:
-                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN task_interval_minutes INTEGER DEFAULT 15")
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN task_interval_minutes INTEGER DEFAULT 30")
                 logger.info("数据库升级：playlist_monitors 添加 task_interval_minutes 字段")
             if 'max_import_per_check' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN max_import_per_check INTEGER DEFAULT 10")
@@ -209,7 +209,7 @@ class PlaylistMonitorManager:
         bilibili_season_id: Optional[int] = None,
         bilibili_section_id: Optional[int] = None,
         bilibili_season_title: Optional[str] = None,
-        task_interval_minutes: int = 15,
+        task_interval_minutes: int = 30,
         max_import_per_check: int = 10,
         import_order: str = 'asc'
     ) -> Dict[str, Any]:
@@ -254,7 +254,7 @@ class PlaylistMonitorManager:
         safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
         safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
         safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
-        safe_task_interval = max(0, int(task_interval_minutes if task_interval_minutes is not None else 15))
+        safe_task_interval = max(0, int(task_interval_minutes if task_interval_minutes is not None else 30))
         safe_max_import = max(0, int(max_import_per_check if max_import_per_check is not None else 10))
         safe_import_order = 'desc' if str(import_order or '').lower() == 'desc' else 'asc'
 
@@ -778,7 +778,7 @@ class PlaylistMonitorManager:
                     'playlist_id': monitor['playlist_id'],
                     'max_concurrency': monitor['max_concurrency'],
                     'check_interval_minutes': monitor['check_interval_minutes'],
-                    'task_interval_minutes': monitor.get('task_interval_minutes', 15),
+                    'task_interval_minutes': monitor.get('task_interval_minutes', 30),
                     'max_import_per_check': monitor.get('max_import_per_check', 10),
                     'import_order': monitor.get('import_order', 'asc'),
                     'last_task_completed_at': monitor.get('last_task_completed_at'),
@@ -934,7 +934,7 @@ def get_playlist_interval_cooling_info(monitor_id: Optional[int] = None, playlis
                 return False, 0
 
             m_id, p_id, interval_minutes, last_completed_str = row[0], row[1], row[2], row[3]
-            interval_min = int(interval_minutes) if interval_minutes is not None else 15
+            interval_min = int(interval_minutes) if interval_minutes is not None else 30
             if interval_min <= 0:
                 return False, 0
 
