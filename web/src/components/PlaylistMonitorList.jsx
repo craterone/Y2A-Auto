@@ -25,6 +25,8 @@ export function PlaylistMonitorList({
       import_order: monitor.import_order || 'asc',
       auto_upload: monitor.auto_upload !== false && monitor.auto_upload !== 0,
       custom_description: monitor.custom_description || '',
+      title_pattern: monitor.title_pattern || '',
+      title_template: monitor.title_template || '',
     });
   };
 
@@ -41,6 +43,8 @@ export function PlaylistMonitorList({
         import_order: editingMonitor.import_order,
         auto_upload: editingMonitor.auto_upload,
         custom_description: editingMonitor.custom_description,
+        title_pattern: editingMonitor.title_pattern,
+        title_template: editingMonitor.title_template,
       });
       if (res.success) {
         showToast('播放列表监控配置已更新', 'success');
@@ -276,6 +280,24 @@ export function PlaylistMonitorList({
                         maxWidth: '650px',
                       }} title={m.custom_description}>
                         📝 统一简介: {m.custom_description}
+                      </div>
+                    )}
+
+                    {Boolean(m.title_pattern) && Boolean(m.title_template) && (
+                      <div style={{
+                        marginTop: '4px',
+                        fontSize: '0.75rem',
+                        color: '#c084fc',
+                        background: 'rgba(168, 85, 247, 0.06)',
+                        border: '1px dashed rgba(168, 85, 247, 0.2)',
+                        borderRadius: '4px',
+                        padding: '4px 8px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        maxWidth: '650px',
+                      }} title={`匹配: ${m.title_pattern} → 替换: ${m.title_template}`}>
+                        🔤 标题替换: {m.title_template}
                       </div>
                     )}
                   </div>
@@ -624,6 +646,51 @@ export function PlaylistMonitorList({
                   style={{ width: '100%', resize: 'vertical' }}
                   placeholder="留空则使用视频原生简介或AI翻译简介"
                 />
+              </div>
+
+              {/* 标题替换规则 */}
+              <div style={{
+                background: 'rgba(168, 85, 247, 0.05)',
+                border: '1px solid rgba(168, 85, 247, 0.2)',
+                borderRadius: '8px',
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+              }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.825rem', fontWeight: 500, color: '#c084fc', marginBottom: 0 }}>
+                  <span>🔤 标题格式替换规则（可选）</span>
+                  <span className="badge" style={{ background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', fontSize: '0.6rem', padding: '1px 4px' }}>正则</span>
+                </label>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: '3px' }}>
+                    匹配模式（正则表达式）
+                  </label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder={'例如: Learn English.*Part (\\d+)'}
+                    value={editingMonitor.title_pattern}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, title_pattern: e.target.value })}
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.82rem' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: '3px' }}>
+                    替换模板（{'用 {1} 引用捕获组'})
+                  </label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    placeholder={'例如: 跟着《动物庄园》学英语｜深度精听第 {1} 集'}
+                    value={editingMonitor.title_template}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, title_template: e.target.value })}
+                    style={{ width: '100%', fontSize: '0.82rem' }}
+                  />
+                </div>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+                  配置后自动替代标题 AI 翻译，未匹配的标题仍走 AI 翻译
+                </span>
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>

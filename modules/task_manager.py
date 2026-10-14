@@ -3339,6 +3339,7 @@ class TaskProcessor:
 
         # 检查是否关联 Playlist 统一配置的投稿简介 (custom_description)
         custom_desc = task.get('custom_description')
+        replaced_title = None  # 标题正则替换的结果
         if not custom_desc and task.get('playlist_monitor_id'):
             try:
                 from modules.playlist_monitor import playlist_monitor_manager
@@ -3348,14 +3349,39 @@ class TaskProcessor:
             except Exception:
                 pass
 
+        # 检查是否关联 Playlist 配置的标题替换规则 (title_pattern + title_template)
+        if task.get('playlist_monitor_id') and task.get('video_title_original'):
+            try:
+                from modules.playlist_monitor import playlist_monitor_manager, apply_title_replacement
+                mon = mon if 'mon' in dir() and mon else playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+                if mon and mon.get('title_pattern') and mon.get('title_template'):
+                    replaced = apply_title_replacement(
+                        task['video_title_original'],
+                        mon['title_pattern'],
+                        mon['title_template']
+                    )
+                    if replaced:
+                        replaced_title = replaced
+                        task_logger.info(f"标题正则替换命中: \"{task['video_title_original']}\" → \"{replaced_title}\"")
+                        translate_title = False  # 跳过 AI 翻译标题
+                    else:
+                        task_logger.debug(f"标题正则替换未命中 (pattern={mon['title_pattern']})")
+            except Exception as e:
+                task_logger.warning(f"标题替换规则处理异常: {e}")
+
         if custom_desc:
             task_logger.info("检测到所属播放列表已配置统一投稿简介 (custom_description)，跳过简介 AI 翻译，使用固定简介")
             translate_description = False
 
         if not translate_title and not translate_description:
             task_logger.info("标题和描述翻译均已禁用、无需翻译或缺少原文，跳过")
+            skip_updates = {}
+            if replaced_title:
+                skip_updates['video_title_translated'] = replaced_title
             if custom_desc:
-                update_task(task_id, description_translated=custom_desc)
+                skip_updates['description_translated'] = custom_desc
+            if skip_updates:
+                update_task(task_id, **skip_updates)
             return True
 
         translated = translate_video_metadata(
@@ -3371,6 +3397,8 @@ class TaskProcessor:
         )
 
         updates = {}
+        if replaced_title:
+            updates['video_title_translated'] = replaced_title
         if custom_desc:
             updates['description_translated'] = custom_desc
 

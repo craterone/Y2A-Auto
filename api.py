@@ -482,6 +482,8 @@ def api_create_playlist_monitor():
         task_interval_minutes = data.get('task_interval_minutes', 30)
         max_import_per_check = data.get('max_import_per_check', 10)
         import_order = data.get('import_order', 'asc')
+        title_pattern = data.get('title_pattern', '')
+        title_template = data.get('title_template', '')
 
         monitor = playlist_monitor_manager.create_monitor(
             playlist_id_input=playlist_id_input,
@@ -498,6 +500,8 @@ def api_create_playlist_monitor():
             task_interval_minutes=task_interval_minutes,
             max_import_per_check=max_import_per_check,
             import_order=import_order,
+            title_pattern=str(title_pattern or '').strip(),
+            title_template=str(title_template or '').strip(),
         )
 
         return jsonify({

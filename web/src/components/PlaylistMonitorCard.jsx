@@ -11,6 +11,8 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [autoUpload, setAutoUpload] = useState(true);
   const [customDescription, setCustomDescription] = useState('');
   const [customTitle, setCustomTitle] = useState('');
+  const [titlePattern, setTitlePattern] = useState('');
+  const [titleTemplate, setTitleTemplate] = useState('');
   
   // Bilibili 合集状态
   const [seasons, setSeasons] = useState([]);
@@ -117,6 +119,8 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         task_interval_minutes: isNaN(taskInterval) ? 30 : Math.max(0, taskInterval),
         max_import_per_check: isNaN(maxImport) ? 10 : Math.max(0, maxImport),
         import_order: importOrder === 'desc' ? 'desc' : 'asc',
+        title_pattern: titlePattern.trim() || undefined,
+        title_template: titleTemplate.trim() || undefined,
       });
 
       if (res.success) {
@@ -124,6 +128,8 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         setPlaylistId('');
         setCustomTitle('');
         setCustomDescription('');
+        setTitlePattern('');
+        setTitleTemplate('');
         setAutoUpload(true);
         setSelectedSeasonId('');
         setPreviewData(null);
@@ -451,6 +457,54 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
             {selectedSeasonId
               ? '✨ 绑定后，该播放列表监控自动拉取并发布的所有视频，都将归入此合集中！'
               : '选择合集后，监控自动发布的视频将自动收录入该合集；未配置则作为独立视频发布。'}
+          </span>
+        </div>
+
+        {/* 标题替换规则 (title_pattern + title_template) */}
+        <div className="form-group" style={{
+          marginBottom: '20px',
+          background: 'rgba(168, 85, 247, 0.04)',
+          border: '1px solid rgba(168, 85, 247, 0.2)',
+          padding: '14px 16px',
+          borderRadius: '8px',
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 500, marginBottom: '10px' }}>
+            <span>🔤</span> 标题格式替换规则（可选）
+            <span className="badge" style={{ background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', fontSize: '0.65rem', padding: '1px 5px' }}>正则</span>
+          </label>
+
+          <div style={{ marginBottom: '10px' }}>
+            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-dim)', marginBottom: '4px' }}>
+              匹配模式（正则表达式）
+            </label>
+            <input
+              type="text"
+              className="input-field"
+              placeholder={'例如: Learn English.*Part (\\d+)'}
+              value={titlePattern}
+              onChange={(e) => setTitlePattern(e.target.value)}
+              disabled={isSubmitting}
+              style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-dim)', marginBottom: '4px' }}>
+              替换模板（用 {'{{1}}'} 引用正则捕获组）
+            </label>
+            <input
+              type="text"
+              className="input-field"
+              placeholder={'例如: 跟着《动物庄园》学英语｜深度精听第 {1} 集'}
+              value={titleTemplate}
+              onChange={(e) => setTitleTemplate(e.target.value)}
+              disabled={isSubmitting}
+              style={{ width: '100%', fontSize: '0.85rem' }}
+            />
+          </div>
+
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '6px', display: 'block' }}>
+            配置后，检测到的视频标题将按正则匹配并替换为指定格式，替代 AI 翻译标题。未匹配到的标题仍走 AI 翻译。
           </span>
         </div>
 

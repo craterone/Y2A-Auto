@@ -139,6 +139,12 @@ class PlaylistMonitorManager:
             if 'last_task_completed_at' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN last_task_completed_at TIMESTAMP")
                 logger.info("数据库升级：playlist_monitors 添加 last_task_completed_at 字段")
+            if 'title_pattern' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN title_pattern TEXT")
+                logger.info("数据库升级：playlist_monitors 添加 title_pattern 字段")
+            if 'title_template' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN title_template TEXT")
+                logger.info("数据库升级：playlist_monitors 添加 title_template 字段")
             cursor.execute("UPDATE playlist_monitors SET upload_target = 'bilibili' WHERE upload_target = 'acfun' OR upload_target IS NULL")
 
             conn.commit()
@@ -211,7 +217,9 @@ class PlaylistMonitorManager:
         bilibili_season_title: Optional[str] = None,
         task_interval_minutes: int = 30,
         max_import_per_check: int = 10,
-        import_order: str = 'asc'
+        import_order: str = 'asc',
+        title_pattern: Optional[str] = None,
+        title_template: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         创建新的 Playlist 监控
@@ -257,6 +265,14 @@ class PlaylistMonitorManager:
         safe_task_interval = max(0, int(task_interval_minutes if task_interval_minutes is not None else 30))
         safe_max_import = max(0, int(max_import_per_check if max_import_per_check is not None else 10))
         safe_import_order = 'desc' if str(import_order or '').lower() == 'desc' else 'asc'
+        safe_title_pattern = str(title_pattern).strip() if title_pattern else None
+        safe_title_template = str(title_template).strip() if title_template else None
+        # 校验正则表达式合法性
+        if safe_title_pattern:
+            try:
+                re.compile(safe_title_pattern)
+            except re.error as e:
+                raise ValueError(f"标题匹配正则表达式无效: {e}")
 
         conn = get_db_connection()
         try:
@@ -267,12 +283,13 @@ class PlaylistMonitorManager:
                     check_interval_minutes, max_concurrency, upload_target, enabled,
                     auto_upload, custom_description, bilibili_season_id, bilibili_section_id,
                     bilibili_season_title, task_interval_minutes, max_import_per_check,
-                    import_order
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    import_order, title_pattern, title_template
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (clean_playlist_id, title, description, channel_title, thumbnail_url,
                   interval, concurrency, target, 1 if enabled else 0,
                   is_auto_upload, clean_custom_desc, safe_season_id, safe_section_id,
-                  safe_season_title, safe_task_interval, safe_max_import, safe_import_order))
+                  safe_season_title, safe_task_interval, safe_max_import, safe_import_order,
+                  safe_title_pattern, safe_title_template))
             monitor_id = cursor.lastrowid
             conn.commit()
         finally:
@@ -409,6 +426,21 @@ class PlaylistMonitorManager:
             fields.append('import_order = ?')
             val = 'desc' if str(update_data['import_order'] or '').lower() == 'desc' else 'asc'
             params.append(val)
+
+        if 'title_pattern' in update_data:
+            tp = str(update_data['title_pattern'] or '').strip()
+            if tp:
+                try:
+                    re.compile(tp)
+                except re.error as e:
+                    raise ValueError(f"标题匹配正则表达式无效: {e}")
+            fields.append('title_pattern = ?')
+            params.append(tp if tp else None)
+
+        if 'title_template' in update_data:
+            tt = str(update_data['title_template'] or '').strip()
+            fields.append('title_template = ?')
+            params.append(tt if tt else None)
 
         # 投稿目标强制保持并默认固定为 bilibili
         fields.append('upload_target = ?')
@@ -979,3 +1011,39 @@ def get_playlist_interval_cooling_info(monitor_id: Optional[int] = None, playlis
     except Exception as e:
         logger.debug(f"查询播放列表任务间隔冷却信息失败: {e}")
         return False, 0
+
+
+def apply_title_replacement(original_title: str, title_pattern: str, title_template: str) -> Optional[str]:
+    """
+    根据正则匹配模式和替换模板，对视频原标题进行格式化替换。
+
+    Args:
+        original_title: 视频原始标题
+        title_pattern: 正则匹配模式（需匹配原标题，可包含捕获组）
+        title_template: 替换模板，支持 Python re.sub 反向引用语法：
+            - \\1, \\2 ... 引用正则捕获组
+            - 也支持 {1}, {2} ... 的简写形式（内部自动转换为 \\1, \\2）
+
+    Returns:
+        替换后的新标题，若正则不匹配则返回 None
+    """
+    if not original_title or not title_pattern or not title_template:
+        return None
+
+    try:
+        pattern = re.compile(title_pattern)
+        match = pattern.search(original_title)
+        if not match:
+            return None
+
+        # 将模板中的 {n} 简写形式转换为 re.sub 的 \n 反向引用
+        # 例如: "跟着《动物庄园》学英语｜深度精听第 {1} 集" -> "跟着《动物庄园》学英语｜深度精听第 \\1 集"
+        def _convert_template(tmpl: str) -> str:
+            return re.sub(r'\{(\d+)\}', r'\\\1', tmpl)
+
+        converted_template = _convert_template(title_template)
+        result = pattern.sub(converted_template, original_title)
+        return result.strip() if result else None
+    except Exception as e:
+        logger.warning(f"标题替换执行失败 (pattern={title_pattern}, template={title_template}): {e}")
+        return None
