@@ -1986,7 +1986,7 @@ def retry_failed_tasks(config=None):
             upload_progress=None
         )
 
-        if start_task(task_id, config):
+        if start_task(task_id, config, ignore_interval=True):
             scheduled += 1
         else:
             failed_ids.append(task_id)
@@ -8706,13 +8706,14 @@ class TaskProcessor:
             )
 
 # 任务控制函数
-def start_task(task_id, config=None):
+def start_task(task_id, config=None, ignore_interval=False):
     """
     启动任务处理
     
     Args:
         task_id: 任务ID
         config: 配置信息
+        ignore_interval: 是否忽略播放列表防风控执行间隔
     
     Returns:
         success: 启动是否成功
@@ -8728,6 +8729,10 @@ def start_task(task_id, config=None):
         logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能启动")
         return False
     
+    # 失败任务手动重新开始时，自动忽略防风控间隔限制
+    if task['status'] == TASK_STATES['FAILED']:
+        ignore_interval = True
+    
     # 如果没有提供配置，尝试从Flask app获取
     if not config:
         try:
@@ -8742,8 +8747,8 @@ def start_task(task_id, config=None):
     # 使用全局任务处理器，确保并发控制生效
     processor = get_global_task_processor(config)
     
-    # 调度任务
-    job_id = processor.schedule_task(task_id)
+    # 调度任务（失败任务重启忽略风控间隔）
+    job_id = processor.schedule_task(task_id, ignore_interval=ignore_interval)
     
     return job_id is not None
 

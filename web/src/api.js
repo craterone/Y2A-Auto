@@ -144,6 +144,16 @@ export const api = {
     });
   },
 
+  /**
+   * 手动启动/重新开始任务（失败任务重启不受风控间隔限制）
+   * @param {string} taskId 任务ID
+   */
+  async restartTask(taskId) {
+    return request(`/tasks/${taskId}/start`, {
+      method: 'POST',
+    });
+  },
+
   // ==========================================
 
 

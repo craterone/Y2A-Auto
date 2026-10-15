@@ -36,12 +36,14 @@ export function TaskList({
   loading,
   onRefresh,
   onDelete,
+  onRestart,
   onClearAll,
   onPageChange,
   onPageSizeChange,
   onNavigateCreateTask,
 }) {
   const [deletingId, setDeletingId] = useState(null);
+  const [restartingId, setRestartingId] = useState(null);
   const [isClearing, setIsClearing] = useState(false);
 
   const renderStatusBadge = (task) => {
@@ -317,6 +319,17 @@ export function TaskList({
     }
   };
 
+  const handleRestart = async (task) => {
+    if (onRestart) {
+      setRestartingId(task.id);
+      try {
+        await onRestart(task.id);
+      } finally {
+        setRestartingId(null);
+      }
+    }
+  };
+
   const handleClearAll = async () => {
     const taskCount = total || tasks.length;
     const confirmed = window.confirm(
@@ -556,6 +569,32 @@ export function TaskList({
                     {/* 8. 操作 */}
                     <td style={{ textAlign: 'right' }}>
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', alignItems: 'center', whiteSpace: 'nowrap' }}>
+                        {(task.status === 'failed' || task.status === 'pending') && onRestart && (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => handleRestart(task)}
+                            disabled={restartingId === task.id}
+                            title={task.status === 'failed' ? '重新开始该失败任务（不受风控间隔限制）' : '立即启动该任务'}
+                            style={{
+                              padding: '4px 8px',
+                              fontSize: '0.75rem',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {restartingId === task.id ? (
+                              <>
+                                <span className="spinner" style={{ width: '10px', height: '10px' }} />
+                                启动中
+                              </>
+                            ) : (
+                              task.status === 'failed' ? '🔄 重新开始' : '▶️ 开始'
+                            )}
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn btn-secondary"

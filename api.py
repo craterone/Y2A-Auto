@@ -405,6 +405,44 @@ def api_delete_task(task_id):
         return jsonify({'success': False, 'message': f'删除任务失败: {str(e)}'}), 500
 
 
+@api_bp.route('/tasks/<task_id>/start', methods=['POST'])
+@api_login_required
+def api_start_task(task_id):
+    """
+    RESTful API: 手动启动/重新开始任务（失败任务重启不受风控间隔限制）
+    """
+    web_app = _get_app_module()
+    try:
+        task = web_app.get_task(task_id)
+        if not task:
+            return jsonify({'success': False, 'message': '任务不存在'}), 404
+
+        allowed = ('pending', 'failed')
+        if task['status'] not in allowed:
+            return jsonify({
+                'success': False,
+                'message': f'当前任务状态为 {task["status"]}，只有排队中或失败的任务可以手动启动'
+            }), 400
+
+        from modules.config_manager import load_config
+        config = load_config()
+        success = web_app.start_task(task_id, config, ignore_interval=True)
+
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '任务已重新启动'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': '启动任务失败，可能已达并发上限，请稍后再试'
+            }), 500
+    except Exception as e:
+        logger.error(f"API启动任务异常: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': f'启动任务失败: {str(e)}'}), 500
+
+
 @api_bp.route('/tasks', methods=['DELETE'])
 @api_bp.route('/tasks/clear', methods=['POST', 'DELETE'])
 @api_login_required

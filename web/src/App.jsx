@@ -240,6 +240,21 @@ export function App() {
     }
   };
 
+  // 重新开始失败/待处理任务
+  const handleRestartTask = async (taskId) => {
+    try {
+      const res = await api.restartTask(taskId);
+      if (res.success) {
+        showToast(res.message || '任务已重新启动', 'success');
+        fetchTasks(taskPageRef.current, taskPerPageRef.current, true);
+      }
+      return res;
+    } catch (err) {
+      showToast(err.message || '重新开始任务失败', 'error');
+      throw err;
+    }
+  };
+
   // 新建 Playlist 监控回调
   const handleMonitorCreated = () => {
     fetchMonitors(false);
@@ -297,6 +312,7 @@ export function App() {
             loading={loadingTasks}
             onRefresh={() => fetchTasks(taskPage, taskPerPage, false)}
             onDelete={handleDeleteTask}
+            onRestart={handleRestartTask}
             onClearAll={handleClearAllTasks}
             onPageChange={handleTaskPageChange}
             onPageSizeChange={handleTaskPerPageChange}
