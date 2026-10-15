@@ -479,7 +479,7 @@ def api_create_playlist_monitor():
         bilibili_season_id = data.get('bilibili_season_id')
         bilibili_section_id = data.get('bilibili_section_id')
         bilibili_season_title = data.get('bilibili_season_title')
-        task_interval_minutes = data.get('task_interval_minutes', 30)
+        task_interval_minutes = data.get('task_interval_minutes', 15)
         max_import_per_check = data.get('max_import_per_check', 10)
         import_order = data.get('import_order', 'asc')
         title_pattern = data.get('title_pattern', '')

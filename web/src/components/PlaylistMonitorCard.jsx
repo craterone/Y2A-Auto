@@ -5,7 +5,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [playlistId, setPlaylistId] = useState('');
   const [checkInterval, setCheckInterval] = useState(30);
   const [maxConcurrency, setMaxConcurrency] = useState(1);
-  const [taskIntervalMinutes, setTaskIntervalMinutes] = useState(30);
+  const [taskIntervalMinutes, setTaskIntervalMinutes] = useState(15);
   const [maxImportPerCheck, setMaxImportPerCheck] = useState(10);
   const [importOrder, setImportOrder] = useState('asc');
   const [autoUpload, setAutoUpload] = useState(true);
@@ -116,7 +116,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         bilibili_season_id: matchedSeason ? matchedSeason.season_id : undefined,
         bilibili_section_id: firstSection ? firstSection.section_id : undefined,
         bilibili_season_title: matchedSeason ? matchedSeason.title : undefined,
-        task_interval_minutes: isNaN(taskInterval) ? 30 : Math.max(0, taskInterval),
+        task_interval_minutes: isNaN(taskInterval) ? 15 : Math.max(0, taskInterval),
         max_import_per_check: isNaN(maxImport) ? 10 : Math.max(0, maxImport),
         import_order: importOrder === 'desc' ? 'desc' : 'asc',
         title_pattern: titlePattern.trim() || undefined,
