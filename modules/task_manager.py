@@ -1798,6 +1798,43 @@ def get_tasks_by_status(status):
     finally:
         conn.close()
 
+def has_failed_tasks_in_playlist(monitor_id=None, playlist_id=None, exclude_task_id=None):
+    """检查指定 Playlist 是否存在失败任务，用于阻塞后续任务防止连续失败。
+
+    Args:
+        monitor_id: 播放列表监控 ID
+        playlist_id: 播放列表 ID
+        exclude_task_id: 排除的任务 ID（通常为当前正要调度的任务自身）
+
+    Returns:
+        (has_failed, count): 是否有失败任务及失败数量
+    """
+    if not monitor_id and not playlist_id:
+        return False, 0
+    conn = get_db_connection()
+    try:
+        conditions = []
+        params = []
+        if monitor_id:
+            conditions.append('playlist_monitor_id = ?')
+            params.append(monitor_id)
+        if playlist_id:
+            conditions.append('playlist_id = ?')
+            params.append(playlist_id)
+        where_playlist = '(' + ' OR '.join(conditions) + ')'
+        sql = f"SELECT COUNT(*) FROM tasks WHERE status = 'failed' AND {where_playlist}"
+        if exclude_task_id:
+            sql += ' AND id != ?'
+            params.append(exclude_task_id)
+        cur = conn.execute(sql, params)
+        count = cur.fetchone()[0]
+        return count > 0, count
+    except Exception as e:
+        logger.debug(f"检查 Playlist 失败任务时出错: {e}")
+        return False, 0
+    finally:
+        conn.close()
+
 def delete_task(task_id, delete_files=True):
     """
     删除任务
@@ -2510,6 +2547,18 @@ class TaskProcessor:
                         except Exception as e:
                             logger.debug(f"检查播放列表冷却失败: {e}")
 
+                    # 检查同 Playlist 是否有失败任务，有则阻塞后续任务防止连续失败
+                    if not ignore_interval:
+                        p_has_failed, p_failed_count = has_failed_tasks_in_playlist(
+                            monitor_id=p_mon_id, playlist_id=p_id, exclude_task_id=task_id
+                        )
+                        if p_has_failed:
+                            logger.info(
+                                f"任务 {task_id[:8]} 所属 Playlist 存在 {p_failed_count} 个失败任务，"
+                                f"暂不调度后续任务以防止连续失败（请先处理失败任务后再继续）"
+                            )
+                            return None
+
                 global task_semaphore
                 if task_semaphore is None:
                     init_task_semaphore(self._current_max_concurrent_tasks)
@@ -2978,6 +3027,17 @@ class TaskProcessor:
                             continue
                     except Exception as e:
                         logger.debug(f"检查播放列表冷却失败: {e}")
+
+                    # 检查同 Playlist 是否有失败任务，有则阻塞后续任务防止连续失败
+                    p_has_failed, p_failed_count = has_failed_tasks_in_playlist(
+                        monitor_id=cand_mon_id, playlist_id=cand_pid, exclude_task_id=cand_task['id']
+                    )
+                    if p_has_failed:
+                        logger.info(
+                            f"任务 {cand_task['id'][:8]} 所属播放列表 ({cand_mon_id or cand_pid}) "
+                            f"存在 {p_failed_count} 个失败任务，暂不调度以防止连续失败"
+                        )
+                        continue
 
                 next_task = cand_task
                 break
