@@ -11,7 +11,7 @@ export function Navbar({ authState, onLogout, onOpenLogin, activeTab, onTabChang
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span className="brand-title">Y2A-Auto</span>
-              <span className="brand-tag">v2.0 REST</span>
+              <span className="brand-tag">{__APP_VERSION__ || 'dev'}</span>
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
               YouTube 自动化发布至 AcFun & Bilibili

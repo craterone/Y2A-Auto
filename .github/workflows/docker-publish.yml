@@ -65,6 +65,8 @@ jobs:
           load: true
           push: false
           tags: ${{ env.LOCAL_IMAGE }}:${{ steps.meta-dockerhub.outputs.version }}
+          build-args: |
+            APP_VERSION=${{ steps.meta-dockerhub.outputs.version }}
           labels: |
             ${{ steps.meta-dockerhub.outputs.labels }}
             ${{ steps.meta-ghcr.outputs.labels }}
@@ -125,6 +127,8 @@ jobs:
           tags: |
             ${{ steps.meta-dockerhub.outputs.tags }}
             ${{ steps.meta-ghcr.outputs.tags }}
+          build-args: |
+            APP_VERSION=${{ steps.meta-dockerhub.outputs.version }}
           labels: |
             ${{ steps.meta-dockerhub.outputs.labels }}
             ${{ steps.meta-ghcr.outputs.labels }}

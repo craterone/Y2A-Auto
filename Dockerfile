@@ -104,6 +104,10 @@ RUN set -eux \
 # ============================================================
 FROM node:20-slim AS web-builder
 
+# 接收版本号参数，注入前端构建
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=${APP_VERSION}
+
 WORKDIR /app/web
 
 # 单独复制前端依赖定义以充分利用 Docker 缓存层
