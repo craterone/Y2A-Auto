@@ -1042,7 +1042,7 @@ def apply_title_replacement(original_title: str, title_pattern: str, title_templ
             return re.sub(r'\{(\d+)\}', r'\\\1', tmpl)
 
         converted_template = _convert_template(title_template)
-        result = pattern.sub(converted_template, original_title)
+        result = match.expand(converted_template)
         return result.strip() if result else None
     except Exception as e:
         logger.warning(f"标题替换执行失败 (pattern={title_pattern}, template={title_template}): {e}")
