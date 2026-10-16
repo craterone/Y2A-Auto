@@ -2739,7 +2739,14 @@ class TaskProcessor:
                     return
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_FETCH_INFO)
 
-            # 2. 翻译/标签/分区推荐（如有需要）
+            # 2a. 应用 Playlist 配置的标题替换和统一简介（独立于翻译开关）
+            task = get_task(task_id)
+            if task and task.get('playlist_monitor_id'):
+                self._apply_playlist_overrides(task_id, task, task_logger)
+                task = get_task(task_id)
+            _raise_if_cancelled(task_id, task_logger)
+
+            # 2b. 翻译/标签/分区推荐（如有需要）
             if self.config.get('TRANSLATE_TITLE', True) or self.config.get('TRANSLATE_DESCRIPTION', True):
                 if PIPELINE_STAGE_TRANSLATE_CONTENT in completed_stages:
                     task_logger.info("跳过标题/描述翻译（checkpoint已完成）")
@@ -3359,6 +3366,45 @@ class TaskProcessor:
             task_logger.warning(f"重新采集封面时发生异常: {e}")
         return ''
 
+    def _apply_playlist_overrides(self, task_id, task, task_logger):
+        """独立于翻译流程，应用 Playlist 配置的标题正则替换和统一投稿简介。"""
+        mon = None
+        updates = {}
+
+        try:
+            from modules.playlist_monitor import playlist_monitor_manager, apply_title_replacement
+            mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+        except Exception as e:
+            task_logger.warning(f"获取 playlist monitor 配置失败: {e}")
+            return
+
+        if not mon:
+            return
+
+        # 标题正则替换
+        if mon.get('title_pattern') and mon.get('title_template') and task.get('video_title_original'):
+            try:
+                replaced = apply_title_replacement(
+                    task['video_title_original'],
+                    mon['title_pattern'],
+                    mon['title_template']
+                )
+                if replaced:
+                    updates['video_title_translated'] = replaced
+                    task_logger.info(f"标题正则替换命中: \"{task['video_title_original']}\" → \"{replaced}\"")
+                else:
+                    task_logger.debug(f"标题正则替换未命中 (pattern={mon['title_pattern']})")
+            except Exception as e:
+                task_logger.warning(f"标题替换规则处理异常: {e}")
+
+        # 统一投稿简介
+        if not task.get('custom_description') and mon.get('custom_description'):
+            updates['custom_description'] = mon['custom_description']
+            task_logger.info("从所属播放列表获取统一投稿简介 (custom_description)")
+
+        if updates:
+            update_task(task_id, **updates)
+
     def _translate_content(self, task_id, task_logger):
         """翻译视频标题和描述"""
         from modules.ai_enhancer import translate_video_metadata
@@ -3394,50 +3440,23 @@ class TaskProcessor:
             if prompt_key in self.config:
                 openai_config[prompt_key] = self.config[prompt_key]
         
-        translate_title = bool(self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'))
+        # 如果标题已被 playlist 正则替换过，跳过标题 AI 翻译
+        translate_title = bool(
+            self.config.get('TRANSLATE_TITLE', True)
+            and task.get('video_title_original')
+            and not task.get('video_title_translated')
+        )
         translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
 
-        # 检查是否关联 Playlist 统一配置的投稿简介 (custom_description)
+        # 检查统一投稿简介（已由 _apply_playlist_overrides 写入 custom_description）
         custom_desc = task.get('custom_description')
-        replaced_title = None  # 标题正则替换的结果
-        if not custom_desc and task.get('playlist_monitor_id'):
-            try:
-                from modules.playlist_monitor import playlist_monitor_manager
-                mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
-                if mon and mon.get('custom_description'):
-                    custom_desc = mon['custom_description']
-            except Exception:
-                pass
-
-        # 检查是否关联 Playlist 配置的标题替换规则 (title_pattern + title_template)
-        if task.get('playlist_monitor_id') and task.get('video_title_original'):
-            try:
-                from modules.playlist_monitor import playlist_monitor_manager, apply_title_replacement
-                mon = mon if 'mon' in dir() and mon else playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
-                if mon and mon.get('title_pattern') and mon.get('title_template'):
-                    replaced = apply_title_replacement(
-                        task['video_title_original'],
-                        mon['title_pattern'],
-                        mon['title_template']
-                    )
-                    if replaced:
-                        replaced_title = replaced
-                        task_logger.info(f"标题正则替换命中: \"{task['video_title_original']}\" → \"{replaced_title}\"")
-                        translate_title = False  # 跳过 AI 翻译标题
-                    else:
-                        task_logger.debug(f"标题正则替换未命中 (pattern={mon['title_pattern']})")
-            except Exception as e:
-                task_logger.warning(f"标题替换规则处理异常: {e}")
-
         if custom_desc:
-            task_logger.info("检测到所属播放列表已配置统一投稿简介 (custom_description)，跳过简介 AI 翻译，使用固定简介")
+            task_logger.info("检测到统一投稿简介 (custom_description)，跳过简介 AI 翻译，使用固定简介")
             translate_description = False
 
         if not translate_title and not translate_description:
             task_logger.info("标题和描述翻译均已禁用、无需翻译或缺少原文，跳过")
             skip_updates = {}
-            if replaced_title:
-                skip_updates['video_title_translated'] = replaced_title
             if custom_desc:
                 skip_updates['description_translated'] = custom_desc
             if skip_updates:
@@ -3457,8 +3476,7 @@ class TaskProcessor:
         )
 
         updates = {}
-        if replaced_title:
-            updates['video_title_translated'] = replaced_title
+        custom_desc = task.get('custom_description')
         if custom_desc:
             updates['description_translated'] = custom_desc
 
