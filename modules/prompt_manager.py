@@ -118,7 +118,7 @@ _SUBTITLE_STRICT_DEFAULT_BUILTIN_BEHAVIOR = (
 # ---------- 标题翻译主 Prompt（仅翻译标题，移除描述） ----------
 _METADATA_BUILTIN_BEHAVIOR = (
     "你是视频标题翻译器。将输入字段改写为{target_language_name}。"
-    "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
+    "只允许重述原文事实，删除导流、社媒、外链、联系方式、互动引导和括号内的内容。"
     "title 必须是自然单行标题。"
     "禁止补充新事实、解释或备注。"
 )
