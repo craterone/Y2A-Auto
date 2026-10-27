@@ -288,7 +288,7 @@ export function PlaylistMonitorList({
                       </div>
                     )}
 
-                    {Boolean(m.title_pattern) && Boolean(m.title_template) && (
+                    {Boolean(m.title_template) && (
                       <div style={{
                         marginTop: '4px',
                         fontSize: '0.75rem',
@@ -301,8 +301,8 @@ export function PlaylistMonitorList({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         maxWidth: '650px',
-                      }} title={`匹配: ${m.title_pattern} → 替换: ${m.title_template}`}>
-                        🔤 标题替换: {m.title_template}
+                      }} title={m.title_pattern ? `匹配: ${m.title_pattern} → 替换: ${m.title_template}` : `全匹配: {1} → 替换: ${m.title_template}`}>
+                        🔤 标题替换: {m.title_pattern ? `${m.title_pattern} → ` : '全匹配 → '}{m.title_template}
                       </div>
                     )}
                   </div>
@@ -682,12 +682,12 @@ export function PlaylistMonitorList({
                 </label>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: '3px' }}>
-                    匹配模式（正则表达式）
+                    匹配模式（正则表达式，留空则全匹配）
                   </label>
                   <input
                     type="text"
                     className="input-field"
-                    placeholder={'例如: Learn English.*Part (\\d+)'}
+                    placeholder={'留空为全匹配（标题即为{1}），或如: Part (\\d+)'}
                     value={editingMonitor.title_pattern}
                     onChange={(e) => setEditingMonitor({ ...editingMonitor, title_pattern: e.target.value })}
                     style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.82rem' }}
@@ -695,7 +695,7 @@ export function PlaylistMonitorList({
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: '3px' }}>
-                    替换模板（{'用 {1} 引用捕获组'})
+                    替换模板（用 {'{1}'} 引用捕获组或完整标题）
                   </label>
                   <input
                     type="text"
@@ -707,7 +707,7 @@ export function PlaylistMonitorList({
                   />
                 </div>
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-                  配置后自动替代标题 AI 翻译，未匹配的标题仍走 AI 翻译
+                  同时开启翻译与替换时，先翻译后替换；匹配模式留空为全匹配，翻译后标题等于 {'{1}'}
                 </span>
               </div>
 

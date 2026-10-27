@@ -501,12 +501,12 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
 
           <div style={{ marginBottom: '10px' }}>
             <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-dim)', marginBottom: '4px' }}>
-              匹配模式（正则表达式）
+              匹配模式（正则表达式，留空则全匹配）
             </label>
             <input
               type="text"
               className="input-field"
-              placeholder={'例如: Learn English.*Part (\\d+)'}
+              placeholder={'留空为全匹配（标题即为{1}），或如: Part (\\d+)'}
               value={titlePattern}
               onChange={(e) => setTitlePattern(e.target.value)}
               disabled={isSubmitting}
@@ -516,7 +516,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
 
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-dim)', marginBottom: '4px' }}>
-              替换模板（用 {'{{1}}'} 引用正则捕获组）
+              替换模板（用 {'{1}'} 引用捕获组或完整标题）
             </label>
             <input
               type="text"
@@ -530,7 +530,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
           </div>
 
           <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '6px', display: 'block' }}>
-            配置后，检测到的视频标题将按正则匹配并替换为指定格式，替代 AI 翻译标题。未匹配到的标题仍走 AI 翻译。
+            可与自动翻译同时开启（先翻译后正则替换）。正则表达式留空时为全匹配，翻译后的标题等于 {'{1}'}。
           </span>
         </div>
 

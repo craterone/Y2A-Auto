@@ -1026,26 +1026,38 @@ def get_playlist_interval_cooling_info(monitor_id: Optional[int] = None, playlis
         return False, 0
 
 
-def apply_title_replacement(original_title: str, title_pattern: str, title_template: str) -> Optional[str]:
+def apply_title_replacement(title_input: str, title_pattern: Optional[str], title_template: Optional[str]) -> Optional[str]:
     """
-    根据正则匹配模式和替换模板，对视频原标题进行格式化替换。
+    根据正则匹配模式和替换模板，对视频标题进行格式化替换。
 
     Args:
-        original_title: 视频原始标题
-        title_pattern: 正则匹配模式（需匹配原标题，可包含捕获组）
+        title_input: 待替换的标题（原始标题或翻译后的标题）
+        title_pattern: 正则匹配模式（可包含捕获组）。
+            若为空或未提供，则默认为全匹配模式（整个标题作为捕获组 1，即 {1} 等于标题全文）。
         title_template: 替换模板，支持 Python re.sub 反向引用语法：
             - \\1, \\2 ... 引用正则捕获组
             - 也支持 {1}, {2} ... 的简写形式（内部自动转换为 \\1, \\2）
 
     Returns:
-        替换后的新标题，若正则不匹配则返回 None
+        替换后的新标题，若正则不匹配或参数缺失则返回 None
     """
-    if not original_title or not title_pattern or not title_template:
+    if not title_input or not title_template:
         return None
 
+    clean_template = str(title_template).strip()
+    if not clean_template:
+        return None
+
+    clean_pattern = str(title_pattern or '').strip()
+
     try:
-        pattern = re.compile(title_pattern)
-        match = pattern.search(original_title)
+        if not clean_pattern:
+            # 正则为空时为全匹配模式，整个标题作为捕获组 1（即 {1} 等于标题全文）
+            pattern = re.compile(r'^(.*)$', re.DOTALL)
+        else:
+            pattern = re.compile(clean_pattern)
+
+        match = pattern.search(title_input)
         if not match:
             return None
 
@@ -1054,7 +1066,7 @@ def apply_title_replacement(original_title: str, title_pattern: str, title_templ
         def _convert_template(tmpl: str) -> str:
             return re.sub(r'\{(\d+)\}', r'\\\1', tmpl)
 
-        converted_template = _convert_template(title_template)
+        converted_template = _convert_template(clean_template)
         result = match.expand(converted_template)
         return result.strip() if result else None
     except Exception as e:

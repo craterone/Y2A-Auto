@@ -3441,26 +3441,31 @@ class TaskProcessor:
         if not mon:
             return
 
-        # 标题正则替换
-        if mon.get('title_pattern') and mon.get('title_template') and task.get('video_title_original'):
-            try:
-                replaced = apply_title_replacement(
-                    task['video_title_original'],
-                    mon['title_pattern'],
-                    mon['title_template']
-                )
-                if replaced:
-                    updates['video_title_translated'] = replaced
-                    task_logger.info(f"标题正则替换命中: \"{task['video_title_original']}\" → \"{replaced}\"")
-                else:
-                    task_logger.debug(f"标题正则替换未命中 (pattern={mon['title_pattern']})")
-            except Exception as e:
-                task_logger.warning(f"标题替换规则处理异常: {e}")
-
         # 统一投稿简介
         if not task.get('custom_description') and mon.get('custom_description'):
             updates['custom_description'] = mon['custom_description']
             task_logger.info("从所属播放列表获取统一投稿简介 (custom_description)")
+
+        # 检查是否开启标题自动翻译
+        should_trans_title = _should_translate_title_for_task(task, self.config, task_logger)
+        if should_trans_title:
+            task_logger.info("已开启标题自动翻译，标题正则替换将延后至翻译完成后执行")
+        else:
+            # 未开启标题自动翻译：直接对原标题执行正则替换（若配置了 title_template）
+            if mon.get('title_template') and task.get('video_title_original'):
+                try:
+                    replaced = apply_title_replacement(
+                        task['video_title_original'],
+                        mon.get('title_pattern'),
+                        mon.get('title_template')
+                    )
+                    if replaced:
+                        updates['video_title_translated'] = replaced
+                        task_logger.info(f"标题正则替换命中: \"{task['video_title_original']}\" → \"{replaced}\"")
+                    else:
+                        task_logger.debug(f"标题正则替换未命中 (pattern={mon.get('title_pattern')})")
+                except Exception as e:
+                    task_logger.warning(f"标题替换规则处理异常: {e}")
 
         if updates:
             update_task(task_id, **updates)
@@ -3566,7 +3571,32 @@ class TaskProcessor:
 
         requested_fields = set(translated.get('requested_fields') or [])
         if translate_title and 'title' in requested_fields:
-            updates['video_title_translated'] = translated.get('title', '')
+            trans_title = translated.get('title', '')
+            final_title = trans_title
+            # 若所属播放列表配置了标题替换规则，在翻译后执行正则替换
+            if task.get('playlist_monitor_id'):
+                try:
+                    from modules.playlist_monitor import playlist_monitor_manager, apply_title_replacement
+                    mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+                    if mon and mon.get('title_template'):
+                        replaced = apply_title_replacement(
+                            trans_title,
+                            mon.get('title_pattern'),
+                            mon.get('title_template')
+                        )
+                        if replaced:
+                            task_logger.info(
+                                f"翻译后标题正则替换成功: \"{trans_title}\" → \"{replaced}\" "
+                                f"(pattern={mon.get('title_pattern') or '全匹配'}, template={mon.get('title_template')})"
+                            )
+                            final_title = replaced
+                        else:
+                            task_logger.info(
+                                f"翻译后标题正则未命中 (pattern={mon.get('title_pattern')})，保留翻译标题: \"{trans_title}\""
+                            )
+                except Exception as e:
+                    task_logger.warning(f"翻译后标题正则替换执行异常: {e}")
+            updates['video_title_translated'] = final_title
         if translate_description and 'description' in requested_fields:
             updates['description_translated'] = translated.get('description', '')
 
