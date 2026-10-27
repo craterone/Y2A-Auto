@@ -9,6 +9,7 @@ YouTube Playlist 监控模块
 
 import os
 import re
+import json
 import sqlite3
 import logging
 import threading
@@ -27,6 +28,55 @@ if not logger.handlers:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter('%(asctime)s - Playlist监控 - %(levelname)s - %(message)s'))
     logger.addHandler(console_handler)
+
+
+def _normalize_playlist_tags(tags_input: Any) -> List[str]:
+    """
+    标准化播放列表标签列表：
+    - 支持 List[str]、JSON 字符串、逗号或分号分隔字符串
+    - 去除空标签与前后空白
+    - 单标签长度限制在 20 个字符以内
+    - 去重并保持原始顺序
+    - 最多保留 10 个标签
+    """
+    if not tags_input:
+        return []
+
+    raw_list = []
+    if isinstance(tags_input, list):
+        raw_list = tags_input
+    elif isinstance(tags_input, str):
+        s = tags_input.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                raw_list = parsed
+            else:
+                raw_list = [parsed]
+        except Exception:
+            raw_list = re.split(r'[,，;；\n]+', s)
+    else:
+        return []
+
+    seen = set()
+    cleaned = []
+    for item in raw_list:
+        tag = str(item or '').strip()
+        if not tag:
+            continue
+        if len(tag) > 20:
+            tag = tag[:20]
+        tag_key = tag.lower()
+        if tag_key in seen:
+            continue
+        seen.add(tag_key)
+        cleaned.append(tag)
+        if len(cleaned) >= 10:
+            break
+
+    return cleaned
 
 
 def extract_playlist_id(url_or_id: str) -> Optional[str]:
@@ -84,6 +134,7 @@ class PlaylistMonitorManager:
                     import_order TEXT DEFAULT 'asc',
                     last_task_completed_at TIMESTAMP,
                     translate_title BOOLEAN DEFAULT 0,
+                    custom_tags TEXT,
                     enabled BOOLEAN DEFAULT 1,
                     last_checked_at TIMESTAMP,
                     last_check_status TEXT,
@@ -119,6 +170,9 @@ class PlaylistMonitorManager:
             if 'custom_description' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN custom_description TEXT")
                 logger.info("数据库升级：playlist_monitors 添加 custom_description 字段")
+            if 'custom_tags' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN custom_tags TEXT")
+                logger.info("数据库升级：playlist_monitors 添加 custom_tags 字段")
             if 'bilibili_season_id' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN bilibili_season_id INTEGER")
                 logger.info("数据库升级：playlist_monitors 添加 bilibili_season_id 字段")
@@ -224,7 +278,8 @@ class PlaylistMonitorManager:
         import_order: str = 'asc',
         title_pattern: Optional[str] = None,
         title_template: Optional[str] = None,
-        translate_title: bool = False
+        translate_title: bool = False,
+        custom_tags: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         创建新的 Playlist 监控
@@ -280,6 +335,10 @@ class PlaylistMonitorManager:
             except re.error as e:
                 raise ValueError(f"标题匹配正则表达式无效: {e}")
 
+        # 标准化标签
+        normalized_tags = _normalize_playlist_tags(custom_tags)
+        safe_custom_tags = json.dumps(normalized_tags, ensure_ascii=False) if normalized_tags else None
+
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -289,13 +348,15 @@ class PlaylistMonitorManager:
                     check_interval_minutes, max_concurrency, upload_target, enabled,
                     auto_upload, custom_description, bilibili_season_id, bilibili_section_id,
                     bilibili_season_title, task_interval_minutes, max_import_per_check,
-                    import_order, title_pattern, title_template, translate_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    import_order, title_pattern, title_template, translate_title,
+                    custom_tags
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (clean_playlist_id, title, description, channel_title, thumbnail_url,
                   interval, concurrency, target, 1 if enabled else 0,
                   is_auto_upload, clean_custom_desc, safe_season_id, safe_section_id,
                   safe_season_title, safe_task_interval, safe_max_import, safe_import_order,
-                  safe_title_pattern, safe_title_template, is_translate_title))
+                  safe_title_pattern, safe_title_template, is_translate_title,
+                  safe_custom_tags))
             monitor_id = cursor.lastrowid
             conn.commit()
         finally:
@@ -321,6 +382,7 @@ class PlaylistMonitorManager:
                 return None
             data = dict(row)
             data['task_stats'] = self._get_monitor_task_stats(conn, monitor_id, data['playlist_id'])
+            data['tags'] = _normalize_playlist_tags(data.get('custom_tags'))
             return data
         finally:
             conn.close()
@@ -336,6 +398,7 @@ class PlaylistMonitorManager:
             for r in rows:
                 item = dict(r)
                 item['task_stats'] = self._get_monitor_task_stats(conn, item['id'], item['playlist_id'])
+                item['tags'] = _normalize_playlist_tags(item.get('custom_tags'))
                 results.append(item)
             return results
         finally:
@@ -452,6 +515,13 @@ class PlaylistMonitorManager:
             tt_val = 1 if bool(update_data['translate_title']) else 0
             fields.append('translate_title = ?')
             params.append(tt_val)
+
+        if 'custom_tags' in update_data or 'tags' in update_data:
+            tags_val = update_data.get('custom_tags') if 'custom_tags' in update_data else update_data.get('tags')
+            cleaned_tags = _normalize_playlist_tags(tags_val)
+            safe_tags_json = json.dumps(cleaned_tags, ensure_ascii=False) if cleaned_tags else None
+            fields.append('custom_tags = ?')
+            params.append(safe_tags_json)
 
         # 投稿目标强制保持并默认固定为 bilibili
         fields.append('upload_target = ?')
@@ -649,6 +719,7 @@ class PlaylistMonitorManager:
             added_count = 0
             history_records = []
             monitor_translate_title = bool(monitor.get('translate_title', 0))
+            monitor_custom_tags = monitor.get('custom_tags')
             if auto_add and videos_to_import:
                 for v in videos_to_import:
                     video_url = f"https://www.youtube.com/watch?v={v['video_id']}"
@@ -664,6 +735,7 @@ class PlaylistMonitorManager:
                         bilibili_section_id=monitor.get('bilibili_section_id'),
                         bilibili_season_title=monitor.get('bilibili_season_title'),
                         translate_title=monitor_translate_title,
+                        custom_tags=monitor_custom_tags,
                     )
                     if task_id:
                         history_records.append((monitor_id, v['video_id'], v['title'], v['published_at'], task_id))

@@ -1450,7 +1450,7 @@ def trigger_check_pending_tasks_debounced(delay_seconds=0.5):
         _pending_check_trigger_timer = threading.Thread(target=_runner, daemon=True)
         _pending_check_trigger_timer.start()
 
-def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True, bilibili_season_id=None, bilibili_section_id=None, bilibili_season_title=None, translate_title=False):
+def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True, bilibili_season_id=None, bilibili_section_id=None, bilibili_season_title=None, translate_title=False, custom_tags=None):
     """
     添加新任务到数据库
     
@@ -1466,6 +1466,7 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
         bilibili_section_id: 可选，B站合集小节 ID
         bilibili_season_title: 可选，B站合集标题
         translate_title: 可选，是否自动翻译标题，默认 False
+        custom_tags: 可选，所属 Playlist 统一配置的预设标签（列表或JSON）
         
     Returns:
         task_id: 新创建的任务ID
@@ -1489,6 +1490,13 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
     safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
     tt_val = 1 if translate_title else 0
 
+    # 处理预设标签
+    tags_initial = None
+    if custom_tags:
+        norm_tags = _normalize_tags_list(custom_tags)
+        if norm_tags:
+            tags_initial = json.dumps(norm_tags, ensure_ascii=False)
+
     inserted = False
     for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
         conn = get_db_connection()
@@ -1497,11 +1505,12 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
                 '''INSERT INTO tasks (
                     id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, 
                     video_published_at, custom_description, auto_upload, description_translated,
-                    bilibili_season_id, bilibili_section_id, bilibili_season_title, translate_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    bilibili_season_id, bilibili_section_id, bilibili_season_title, translate_title,
+                    tags_generated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, 
                  video_published_at, custom_description, au_val, initial_desc_trans,
-                 safe_season_id, safe_section_id, safe_season_title, tt_val)
+                 safe_season_id, safe_section_id, safe_season_title, tt_val, tags_initial)
             )
             conn.commit()
             inserted = True
@@ -7567,6 +7576,12 @@ class TaskProcessor:
         
         task_logger.info("开始生成视频标签")
         update_task(task_id, status=TASK_STATES['TAGGING'])
+
+        # 优先检查是否已有预设标签（如所属 Playlist 统一配置的标签）
+        existing_tags = _normalize_tags_list(task.get('tags_generated'))
+        if existing_tags:
+            task_logger.info(f"任务已配置预设标签，跳过AI大模型标签生成，直接使用预设标签: {existing_tags}")
+            return True
         
         # 优先使用翻译后的元数据，避免将原始导流文本继续送给标签模型
         from modules.utils import safe_str

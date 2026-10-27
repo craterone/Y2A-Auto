@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api';
+import { PlaylistTagInput } from './PlaylistTagInput';
 
 export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [playlistId, setPlaylistId] = useState('');
@@ -11,6 +12,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [autoUpload, setAutoUpload] = useState(true);
   const [translateTitle, setTranslateTitle] = useState(false);
   const [customDescription, setCustomDescription] = useState('');
+  const [customTags, setCustomTags] = useState([]);
   const [customTitle, setCustomTitle] = useState('');
   const [titlePattern, setTitlePattern] = useState('');
   const [titleTemplate, setTitleTemplate] = useState('');
@@ -123,6 +125,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         import_order: importOrder === 'desc' ? 'desc' : 'asc',
         title_pattern: titlePattern.trim() || undefined,
         title_template: titleTemplate.trim() || undefined,
+        custom_tags: customTags,
       });
 
       if (res.success) {
@@ -130,6 +133,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         setPlaylistId('');
         setCustomTitle('');
         setCustomDescription('');
+        setCustomTags([]);
         setTitlePattern('');
         setTitleTemplate('');
         setAutoUpload(true);
@@ -531,6 +535,22 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
 
           <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '6px', display: 'block' }}>
             可与自动翻译同时开启（先翻译后正则替换）。正则表达式留空时为全匹配，翻译后的标题等于 {'{1}'}。
+          </span>
+        </div>
+
+        {/* 预设视频标签 (Tags) */}
+        <div className="form-group" style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 500, marginBottom: '6px' }}>
+            <span>🏷️ 预设视频标签（可选）</span>
+            <span className="badge" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', fontSize: '0.65rem', padding: '1px 5px' }}>可缓存</span>
+          </label>
+          <PlaylistTagInput
+            tags={customTags}
+            onChange={setCustomTags}
+            disabled={isSubmitting}
+          />
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '6px', display: 'block' }}>
+            配置后，该播放列表下检测到的新视频在发布到 B 站时将统一使用上述标签，并自动跳过 AI 标签生成；若留空则由系统自动推荐生成标签。
           </span>
         </div>
 

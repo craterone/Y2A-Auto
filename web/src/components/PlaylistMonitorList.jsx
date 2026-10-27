@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../api';
+import { PlaylistTagInput } from './PlaylistTagInput';
 
 export function PlaylistMonitorList({
   monitors,
@@ -15,6 +16,18 @@ export function PlaylistMonitorList({
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   const handleOpenEdit = (monitor) => {
+    let currentTags = [];
+    if (Array.isArray(monitor.tags)) {
+      currentTags = monitor.tags;
+    } else if (monitor.custom_tags) {
+      try {
+        const parsed = JSON.parse(monitor.custom_tags);
+        if (Array.isArray(parsed)) currentTags = parsed;
+      } catch {
+        currentTags = [];
+      }
+    }
+
     setEditingMonitor({
       id: monitor.id,
       title: monitor.title || '',
@@ -28,6 +41,7 @@ export function PlaylistMonitorList({
       custom_description: monitor.custom_description || '',
       title_pattern: monitor.title_pattern || '',
       title_template: monitor.title_template || '',
+      custom_tags: currentTags,
     });
   };
 
@@ -47,6 +61,7 @@ export function PlaylistMonitorList({
         custom_description: editingMonitor.custom_description,
         title_pattern: editingMonitor.title_pattern,
         title_template: editingMonitor.title_template,
+        custom_tags: editingMonitor.custom_tags,
       });
       if (res.success) {
         showToast('播放列表监控配置已更新', 'success');
@@ -183,6 +198,11 @@ export function PlaylistMonitorList({
           const isChecking = checkingIds.has(m.id);
           const isDeleting = deletingIds.has(m.id);
           const isToggling = togglingIds.has(m.id);
+          const displayTags = Array.isArray(m.tags)
+            ? m.tags
+            : (m.custom_tags
+              ? (() => { try { return JSON.parse(m.custom_tags); } catch { return []; } })()
+              : []);
 
           return (
             <div
@@ -303,6 +323,34 @@ export function PlaylistMonitorList({
                         maxWidth: '650px',
                       }} title={m.title_pattern ? `匹配: ${m.title_pattern} → 替换: ${m.title_template}` : `全匹配: {1} → 替换: ${m.title_template}`}>
                         🔤 标题替换: {m.title_pattern ? `${m.title_pattern} → ` : '全匹配 → '}{m.title_template}
+                      </div>
+                    )}
+
+                    {Boolean(displayTags && displayTags.length > 0) && (
+                      <div style={{
+                        marginTop: '4px',
+                        fontSize: '0.75rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        flexWrap: 'wrap',
+                      }}>
+                        <span style={{ color: 'var(--text-dim)', fontSize: '0.72rem' }}>🏷️ 预设标签:</span>
+                        {displayTags.map((t, idx) => (
+                          <span
+                            key={`${t}-${idx}`}
+                            style={{
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'rgba(56, 189, 248, 0.12)',
+                              border: '1px solid rgba(56, 189, 248, 0.28)',
+                              fontSize: '0.7rem',
+                              color: '#38bdf8',
+                            }}
+                          >
+                            {t}
+                          </span>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -649,6 +697,21 @@ export function PlaylistMonitorList({
                 </label>
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginLeft: '24px', display: 'block', marginTop: '-4px' }}>
                   开启后通过 AI 翻译视频标题为中文；关闭后保留视频原标题发布（或优先使用下方正则替换规则）
+                </span>
+              </div>
+
+              <div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.825rem', marginBottom: '6px', color: 'var(--text-dim)' }}>
+                  <span>🏷️ 预设视频标签 (可选覆盖)</span>
+                  <span className="badge" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', fontSize: '0.6rem', padding: '1px 4px' }}>可缓存</span>
+                </label>
+                <PlaylistTagInput
+                  tags={editingMonitor.custom_tags || []}
+                  onChange={(newTags) => setEditingMonitor({ ...editingMonitor, custom_tags: newTags })}
+                  disabled={isSavingEdit}
+                />
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: '4px', display: 'block' }}>
+                  修改后，后续新检测导入的视频在发布时将统一使用上述标签；若清空则使用系统自动生成标签。
                 </span>
               </div>
 
