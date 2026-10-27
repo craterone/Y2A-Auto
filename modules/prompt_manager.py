@@ -84,7 +84,8 @@ _SUBTITLE_STRICT_SHARED_RULES = (
 
 _SUBTITLE_JSON_SUFFIX = '只返回 JSON：{"translations":["译文1","译文2"]}。'
 
-_METADATA_JSON_SUFFIX = '只返回 JSON：{"title":"","description":""}。'
+_METADATA_JSON_SUFFIX = '只返回 JSON：{"title":""}。'
+_METADATA_WITH_DESC_JSON_SUFFIX = '只返回 JSON：{"title":"","description":""}。'
 _METADATA_DESC_RETRY_JSON_SUFFIX = '只返回 JSON：{"description":""}。'
 
 # ---------------------------------------------------------------------------
@@ -114,8 +115,16 @@ _SUBTITLE_STRICT_DEFAULT_BUILTIN_BEHAVIOR = (
     "除数字、代码、URL、占位符和专有名词外，不要保留原文。"
 )
 
-# ---------- 标题/简介翻译主 Prompt ----------
+# ---------- 标题翻译主 Prompt（仅翻译标题，移除描述） ----------
 _METADATA_BUILTIN_BEHAVIOR = (
+    "你是视频标题翻译器。将输入字段改写为{target_language_name}。"
+    "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
+    "title 必须是自然单行标题。"
+    "禁止补充新事实、解释或备注。"
+)
+
+# ---------- 标题与简介同时翻译备用 Prompt ----------
+_METADATA_WITH_DESC_BUILTIN_BEHAVIOR = (
     "你是视频标题和简介翻译器。将输入字段改写为{target_language_name}。"
     "只允许重述原文事实，删除导流、社媒、外链、联系方式和互动引导。"
     "title 必须是自然单行标题；description 必须是自然简介，可多段，但不能写成列表、备注或说明。"
@@ -252,8 +261,8 @@ _register_prompt(
 
 _register_prompt(
     "METADATA_TRANSLATE",
-    label="标题/简介翻译主提示词",
-    description="控制标题和简介翻译时的 system prompt。",
+    label="标题翻译主提示词",
+    description="控制标题翻译时的 system prompt。仅翻译标题，不包含简介描述。",
     builtin_template=_METADATA_BUILTIN_BEHAVIOR,
     variables=["target_language_name"],
     applies_to="metadata",
@@ -446,18 +455,35 @@ def get_metadata_translate_prompt(
     user_text: str = "",
     target_language: str = "zh",
     retry: bool = False,
+    include_description: bool = False,
 ) -> str:
-    """获取元数据翻译最终 system prompt（含 JSON 后缀）。
+    """获取元数据/标题翻译最终 system prompt（含 JSON 后缀）。
 
+    include_description=False 时（默认），仅翻译标题，移除描述，返回 {"title":""}。
+    include_description=True 时，包含简介描述并返回 {"title":"","description":""}。
     retry=True 时追加重试说明。
     """
-    behavior = get_final_system_prompt(
-        "METADATA_TRANSLATE",
-        mode=mode,
-        user_text=user_text,
-        target_language=target_language,
-    )
-    suffix = _METADATA_JSON_SUFFIX
+    if include_description:
+        if mode == MODE_BUILTIN and not user_text:
+            render_vars = {"target_language_name": _target_language_name(target_language)}
+            behavior = _render_template(_METADATA_WITH_DESC_BUILTIN_BEHAVIOR, render_vars)
+        else:
+            behavior = get_final_system_prompt(
+                "METADATA_TRANSLATE",
+                mode=mode,
+                user_text=user_text,
+                target_language=target_language,
+            )
+        suffix = _METADATA_WITH_DESC_JSON_SUFFIX
+    else:
+        behavior = get_final_system_prompt(
+            "METADATA_TRANSLATE",
+            mode=mode,
+            user_text=user_text,
+            target_language=target_language,
+        )
+        suffix = _METADATA_JSON_SUFFIX
+
     if retry:
         suffix = "仅重写本次输入中提供的失败字段；无法安全输出时返回空字符串。" + suffix
     return behavior + suffix

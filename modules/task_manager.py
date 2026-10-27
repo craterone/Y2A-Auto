@@ -726,7 +726,7 @@ def _get_missing_required_translation_fields(task, config) -> list:
         if not _normalize_task_text(task.get('video_title_translated')):
             missing_fields.append('title')
 
-    if _as_bool(config.get('TRANSLATE_DESCRIPTION', True)) and _normalize_task_text(task.get('description_original')):
+    if _as_bool(config.get('TRANSLATE_DESCRIPTION', False)) and _normalize_task_text(task.get('description_original')):
         if not _normalize_task_text(task.get('description_translated')):
             missing_fields.append('description')
 
@@ -2791,7 +2791,7 @@ class TaskProcessor:
 
             # 2b. 翻译/标签/分区推荐（如有需要）
             should_trans_title = _should_translate_title_for_task(task, self.config, task_logger)
-            should_trans_desc = _as_bool(self.config.get('TRANSLATE_DESCRIPTION', True))
+            should_trans_desc = _as_bool(self.config.get('TRANSLATE_DESCRIPTION', False))
             has_orig_title = bool(task.get('video_title_original'))
             has_trans_title = bool(task.get('video_title_translated'))
             will_translate_title = bool(should_trans_title and has_orig_title and not has_trans_title)
@@ -3520,13 +3520,20 @@ class TaskProcessor:
             elif has_trans_title:
                 task_logger.info(f"执行内容翻译：【不启动标题翻译】(原因: 已有译文标题: '{task.get('video_title_translated')}')")
 
-        translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
+        translate_description = bool(_as_bool(self.config.get('TRANSLATE_DESCRIPTION', False)) and task.get('description_original'))
 
         # 检查统一投稿简介（已由 _apply_playlist_overrides 写入 custom_description）
         custom_desc = task.get('custom_description')
         if custom_desc:
             task_logger.info("检测到统一投稿简介 (custom_description)，跳过简介 AI 翻译，使用固定简介")
             translate_description = False
+
+        if translate_title and not translate_description:
+            task_logger.info("执行内容翻译：【仅启动标题翻译，移除描述】")
+        elif translate_title and translate_description:
+            task_logger.info("执行内容翻译：【同时启动标题与描述翻译】")
+        elif not translate_title and translate_description:
+            task_logger.info("执行内容翻译：【仅启动描述翻译，不翻译标题】")
 
         if not translate_title and not translate_description:
             task_logger.info("标题和描述翻译均已禁用、无需翻译或缺少原文，跳过")
@@ -3537,9 +3544,12 @@ class TaskProcessor:
                 update_task(task_id, **skip_updates)
             return True
 
+        # 当仅翻译标题时，不传入原始简介，避免描述被带入
+        desc_input = task.get('description_original', '') if translate_description else ''
+
         translated = translate_video_metadata(
             task.get('video_title_original', ''),
-            task.get('description_original', ''),
+            desc_input,
             target_language="zh-CN",
             openai_config=openai_config,
             task_id=task_id,

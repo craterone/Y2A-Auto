@@ -228,14 +228,25 @@ class SmartSegmentPromptTests(unittest.TestCase):
 
 
 class MetadataPromptTests(unittest.TestCase):
-    def test_metadata_translate_prompt(self):
+    def test_metadata_translate_prompt_title_only(self):
+        # 默认仅翻译标题，必须包含 title，绝不包含 description
         prompt = get_metadata_translate_prompt(target_language="zh")
+        self.assertIn('"title"', prompt)
+        self.assertNotIn('"description"', prompt)
+        self.assertNotIn("自然简介", prompt)
+        self.assertIn("视频标题翻译器", prompt)
+
+    def test_metadata_translate_prompt_with_description(self):
+        # 显式包含简介时，同时包含 title 和 description
+        prompt = get_metadata_translate_prompt(target_language="zh", include_description=True)
         self.assertIn('"title"', prompt)
         self.assertIn('"description"', prompt)
 
     def test_metadata_retry_suffix(self):
         prompt = get_metadata_translate_prompt(target_language="zh", retry=True)
         self.assertIn("仅重写本次输入", prompt)
+        self.assertIn('"title"', prompt)
+        self.assertNotIn('"description"', prompt)
 
     def test_desc_retry_prompt(self):
         prompt = get_metadata_desc_retry_prompt(target_language="zh")

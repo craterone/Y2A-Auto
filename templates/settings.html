@@ -1589,8 +1589,8 @@
                                         <article class="settings-card">
                                             <div class="settings-card-header">
                                                 <div>
-                                                    <span class="section-eyebrow">标题/简介翻译</span>
-                                                    <h4>元数据翻译主提示词</h4>
+                                                    <span class="section-eyebrow">标题翻译</span>
+                                                    <h4>标题翻译主提示词</h4>
                                                 </div>
                                                 <span class="settings-status-badge {{ 'is-info' if config.get('METADATA_TRANSLATE_TEXT', '') else 'is-neutral' }}">
                                                     {{ '已自定义' if config.get('METADATA_TRANSLATE_TEXT', '') else '使用内置' }}
@@ -1624,7 +1624,7 @@
                                                     <div class="col-12">
                                                         <div class="form-group mb-0">
                                                             <label for="metadata-translate-text" class="form-label">自定义指令</label>
-                                                            <textarea id="metadata-translate-text" name="METADATA_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：标题风格偏口语化；简介保留原始段落结构">{{ config.get('METADATA_TRANSLATE_TEXT', '') }}</textarea>
+                                                            <textarea id="metadata-translate-text" name="METADATA_TRANSLATE_TEXT" rows="5" class="form-control" maxlength="3000" placeholder="例如：标题风格偏口语化，适合短视频吸引力">{{ config.get('METADATA_TRANSLATE_TEXT', '') }}</textarea>
                                                             <p class="help-text mb-0">可用变量：<code>{target_language_name}</code>。留空则使用内置默认模板。</p>
                                                         </div>
                                                     </div>
