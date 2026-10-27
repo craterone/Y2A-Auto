@@ -83,6 +83,7 @@ class PlaylistMonitorManager:
                     max_import_per_check INTEGER DEFAULT 10,
                     import_order TEXT DEFAULT 'asc',
                     last_task_completed_at TIMESTAMP,
+                    translate_title BOOLEAN DEFAULT 0,
                     enabled BOOLEAN DEFAULT 1,
                     last_checked_at TIMESTAMP,
                     last_check_status TEXT,
@@ -145,6 +146,9 @@ class PlaylistMonitorManager:
             if 'title_template' not in existing_columns:
                 cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN title_template TEXT")
                 logger.info("数据库升级：playlist_monitors 添加 title_template 字段")
+            if 'translate_title' not in existing_columns:
+                cursor.execute("ALTER TABLE playlist_monitors ADD COLUMN translate_title BOOLEAN DEFAULT 0")
+                logger.info("数据库升级：playlist_monitors 添加 translate_title 字段")
             cursor.execute("UPDATE playlist_monitors SET upload_target = 'bilibili' WHERE upload_target = 'acfun' OR upload_target IS NULL")
 
             conn.commit()
@@ -219,7 +223,8 @@ class PlaylistMonitorManager:
         max_import_per_check: int = 10,
         import_order: str = 'asc',
         title_pattern: Optional[str] = None,
-        title_template: Optional[str] = None
+        title_template: Optional[str] = None,
+        translate_title: bool = False
     ) -> Dict[str, Any]:
         """
         创建新的 Playlist 监控
@@ -258,6 +263,7 @@ class PlaylistMonitorManager:
         # 固定默认投稿平台为 bilibili
         target = 'bilibili'
         is_auto_upload = 1 if auto_upload else 0
+        is_translate_title = 1 if translate_title else 0
         clean_custom_desc = (custom_description or '').strip()
         safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
         safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
@@ -283,13 +289,13 @@ class PlaylistMonitorManager:
                     check_interval_minutes, max_concurrency, upload_target, enabled,
                     auto_upload, custom_description, bilibili_season_id, bilibili_section_id,
                     bilibili_season_title, task_interval_minutes, max_import_per_check,
-                    import_order, title_pattern, title_template
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    import_order, title_pattern, title_template, translate_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (clean_playlist_id, title, description, channel_title, thumbnail_url,
                   interval, concurrency, target, 1 if enabled else 0,
                   is_auto_upload, clean_custom_desc, safe_season_id, safe_section_id,
                   safe_season_title, safe_task_interval, safe_max_import, safe_import_order,
-                  safe_title_pattern, safe_title_template))
+                  safe_title_pattern, safe_title_template, is_translate_title))
             monitor_id = cursor.lastrowid
             conn.commit()
         finally:
@@ -441,6 +447,11 @@ class PlaylistMonitorManager:
             tt = str(update_data['title_template'] or '').strip()
             fields.append('title_template = ?')
             params.append(tt if tt else None)
+
+        if 'translate_title' in update_data:
+            tt_val = 1 if bool(update_data['translate_title']) else 0
+            fields.append('translate_title = ?')
+            params.append(tt_val)
 
         # 投稿目标强制保持并默认固定为 bilibili
         fields.append('upload_target = ?')
@@ -637,6 +648,7 @@ class PlaylistMonitorManager:
             # 4. 入库新任务（注意：绝不持有未提交连接，各操作独立短事务完成）
             added_count = 0
             history_records = []
+            monitor_translate_title = bool(monitor.get('translate_title', 0))
             if auto_add and videos_to_import:
                 for v in videos_to_import:
                     video_url = f"https://www.youtube.com/watch?v={v['video_id']}"
@@ -651,6 +663,7 @@ class PlaylistMonitorManager:
                         bilibili_season_id=monitor.get('bilibili_season_id'),
                         bilibili_section_id=monitor.get('bilibili_section_id'),
                         bilibili_season_title=monitor.get('bilibili_season_title'),
+                        translate_title=monitor_translate_title,
                     )
                     if task_id:
                         history_records.append((monitor_id, v['video_id'], v['title'], v['published_at'], task_id))

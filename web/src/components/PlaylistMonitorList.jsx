@@ -24,6 +24,7 @@ export function PlaylistMonitorList({
       max_import_per_check: monitor.max_import_per_check !== undefined ? monitor.max_import_per_check : 10,
       import_order: monitor.import_order || 'asc',
       auto_upload: monitor.auto_upload !== false && monitor.auto_upload !== 0,
+      translate_title: Boolean(monitor.translate_title),
       custom_description: monitor.custom_description || '',
       title_pattern: monitor.title_pattern || '',
       title_template: monitor.title_template || '',
@@ -42,6 +43,7 @@ export function PlaylistMonitorList({
         max_import_per_check: parseInt(editingMonitor.max_import_per_check, 10) || 0,
         import_order: editingMonitor.import_order,
         auto_upload: editingMonitor.auto_upload,
+        translate_title: editingMonitor.translate_title,
         custom_description: editingMonitor.custom_description,
         title_pattern: editingMonitor.title_pattern,
         title_template: editingMonitor.title_template,
@@ -256,6 +258,9 @@ export function PlaylistMonitorList({
                       <span>投稿目标: <strong style={{ color: '#38bdf8' }}>BILIBILI</strong></span>
                       <span className={`badge ${m.auto_upload !== false && m.auto_upload !== 0 ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: '0.68rem', padding: '2px 6px' }}>
                         {m.auto_upload !== false && m.auto_upload !== 0 ? '🚀 自动投稿' : '⏸ 手动发布'}
+                      </span>
+                      <span className={`badge ${m.translate_title ? 'badge-info' : 'badge-neutral'}`} style={{ fontSize: '0.68rem', padding: '2px 6px' }}>
+                        {m.translate_title ? '🌐 自动翻译标题' : '🏷️ 原标题不变'}
                       </span>
                       <span>已探测总视频: <strong>{m.total_videos_found || 0}</strong></span>
                       {Boolean(m.bilibili_season_title) && (
@@ -622,7 +627,7 @@ export function PlaylistMonitorList({
                 </div>
               </div>
 
-              <div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
                   <input
                     type="checkbox"
@@ -632,6 +637,19 @@ export function PlaylistMonitorList({
                   />
                   <span>🚀 自动发布投稿到 Bilibili</span>
                 </label>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={editingMonitor.translate_title}
+                    onChange={(e) => setEditingMonitor({ ...editingMonitor, translate_title: e.target.checked })}
+                    style={{ width: '16px', height: '16px' }}
+                  />
+                  <span>🌐 自动翻译标题（默认关闭）</span>
+                </label>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginLeft: '24px', display: 'block', marginTop: '-4px' }}>
+                  开启后通过 AI 翻译视频标题为中文；关闭后保留视频原标题发布（或优先使用下方正则替换规则）
+                </span>
               </div>
 
               <div>

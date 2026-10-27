@@ -683,12 +683,46 @@ def _normalize_task_text(value) -> str:
     return str(value or '').strip()
 
 
+def _should_translate_title_for_task(task, config=None, task_logger=None) -> bool:
+    """
+    判断指定任务是否需要执行标题自动翻译
+    优先级：
+    1. 任务自身显式指定的 translate_title 字段
+    2. 所属 Playlist 监控配置的 translate_title
+    3. 全局配置 TRANSLATE_TITLE
+    """
+    if task and task.get('translate_title') is not None:
+        res = bool(task['translate_title'])
+        if task_logger:
+            task_logger.info(f"标题翻译开关判定: 任务字段 translate_title={task.get('translate_title')} (结果: {'启动' if res else '不启动'})")
+        return res
+    if task and task.get('playlist_monitor_id'):
+        try:
+            from modules.playlist_monitor import playlist_monitor_manager
+            mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+            if mon and mon.get('translate_title') is not None:
+                res = bool(mon['translate_title'])
+                if task_logger:
+                    task_logger.info(f"标题翻译开关判定: Playlist监控(ID: {task['playlist_monitor_id']}) translate_title={mon.get('translate_title')} (结果: {'启动' if res else '不启动'})")
+                return res
+        except Exception:
+            pass
+    if config:
+        res = _as_bool(config.get('TRANSLATE_TITLE', False))
+        if task_logger:
+            task_logger.info(f"标题翻译开关判定: 全局配置 TRANSLATE_TITLE={config.get('TRANSLATE_TITLE')} (结果: {'启动' if res else '不启动'})")
+        return res
+    if task_logger:
+        task_logger.info("标题翻译开关判定: 无匹配配置，默认不启动")
+    return False
+
+
 def _get_missing_required_translation_fields(task, config) -> list:
     if not task:
         return []
 
     missing_fields = []
-    if _as_bool(config.get('TRANSLATE_TITLE', True)) and _normalize_task_text(task.get('video_title_original')):
+    if _should_translate_title_for_task(task, config) and _normalize_task_text(task.get('video_title_original')):
         if not _normalize_task_text(task.get('video_title_translated')):
             missing_fields.append('title')
 
@@ -1051,7 +1085,8 @@ def init_db():
         subtitle_warning_message TEXT,  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
         bilibili_season_id INTEGER,  -- Bilibili 合集 ID
         bilibili_section_id INTEGER,  -- Bilibili 合集小节 ID
-        bilibili_season_title TEXT  -- Bilibili 合集标题
+        bilibili_season_title TEXT,  -- Bilibili 合集标题
+        translate_title BOOLEAN DEFAULT 0  -- 是否自动翻译标题
     )
     ''')
     
@@ -1356,6 +1391,11 @@ def init_db():
             logger.info("数据库升级：添加bilibili_season_title字段")
             conn.commit()
 
+        if 'translate_title' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN translate_title BOOLEAN DEFAULT 0")
+            logger.info("数据库升级：添加translate_title字段")
+            conn.commit()
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_id ON tasks(playlist_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_monitor_id ON tasks(playlist_monitor_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_video_published_at ON tasks(video_published_at)")
@@ -1410,7 +1450,7 @@ def trigger_check_pending_tasks_debounced(delay_seconds=0.5):
         _pending_check_trigger_timer = threading.Thread(target=_runner, daemon=True)
         _pending_check_trigger_timer.start()
 
-def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True, bilibili_season_id=None, bilibili_section_id=None, bilibili_season_title=None):
+def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True, bilibili_season_id=None, bilibili_section_id=None, bilibili_season_title=None, translate_title=False):
     """
     添加新任务到数据库
     
@@ -1425,6 +1465,7 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
         bilibili_season_id: 可选，B站合集 ID
         bilibili_section_id: 可选，B站合集小节 ID
         bilibili_season_title: 可选，B站合集标题
+        translate_title: 可选，是否自动翻译标题，默认 False
         
     Returns:
         task_id: 新创建的任务ID
@@ -1446,6 +1487,7 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
     safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
     safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
     safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
+    tt_val = 1 if translate_title else 0
 
     inserted = False
     for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
@@ -1455,11 +1497,11 @@ def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor
                 '''INSERT INTO tasks (
                     id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, 
                     video_published_at, custom_description, auto_upload, description_translated,
-                    bilibili_season_id, bilibili_section_id, bilibili_season_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    bilibili_season_id, bilibili_section_id, bilibili_season_title, translate_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, 
                  video_published_at, custom_description, au_val, initial_desc_trans,
-                 safe_season_id, safe_section_id, safe_season_title)
+                 safe_season_id, safe_section_id, safe_season_title, tt_val)
             )
             conn.commit()
             inserted = True
@@ -1574,6 +1616,7 @@ def update_task(task_id, silent=False, **kwargs):
         'bilibili_season_id': 'bilibili_season_id = ?',
         'bilibili_section_id': 'bilibili_section_id = ?',
         'bilibili_season_title': 'bilibili_season_title = ?',
+        'translate_title': 'translate_title = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -2053,7 +2096,7 @@ def get_metadata_translation_retry_block_reason(task, config) -> str | None:
     """返回当前配置下不能重新翻译的原因；可重试时返回 None。"""
     config = config or {}
     can_translate_title = (
-        _as_bool(config.get('TRANSLATE_TITLE', True))
+        _should_translate_title_for_task(task, config)
         and bool(_normalize_task_text(task.get('video_title_original')))
     )
     can_translate_description = (
@@ -2747,7 +2790,22 @@ class TaskProcessor:
             _raise_if_cancelled(task_id, task_logger)
 
             # 2b. 翻译/标签/分区推荐（如有需要）
-            if self.config.get('TRANSLATE_TITLE', True) or self.config.get('TRANSLATE_DESCRIPTION', True):
+            should_trans_title = _should_translate_title_for_task(task, self.config, task_logger)
+            should_trans_desc = _as_bool(self.config.get('TRANSLATE_DESCRIPTION', True))
+            has_orig_title = bool(task.get('video_title_original'))
+            has_trans_title = bool(task.get('video_title_translated'))
+            will_translate_title = bool(should_trans_title and has_orig_title and not has_trans_title)
+
+            if will_translate_title:
+                task_logger.info(f"标题翻译检查：【启动标题翻译】(原标题: '{task.get('video_title_original')}')")
+            elif not should_trans_title:
+                task_logger.info(f"标题翻译检查：【不启动标题翻译】(原因: 自动翻译标题未开启, translate_title={task.get('translate_title')})")
+            elif not has_orig_title:
+                task_logger.info("标题翻译检查：【不启动标题翻译】(原因: 缺少视频原始标题)")
+            elif has_trans_title:
+                task_logger.info(f"标题翻译检查：【不启动标题翻译】(原因: 已有译文或已命中正则替换: '{task.get('video_title_translated')}')")
+
+            if should_trans_title or should_trans_desc:
                 if PIPELINE_STAGE_TRANSLATE_CONTENT in completed_stages:
                     task_logger.info("跳过标题/描述翻译（checkpoint已完成）")
                 else:
@@ -2762,6 +2820,8 @@ class TaskProcessor:
                         task_logger.error("元数据翻译失败，终止任务处理")
                         return
                 _raise_if_cancelled(task_id, task_logger)
+            else:
+                task_logger.info("未进入元数据翻译流程（标题和简介自动翻译开关均未开启）")
 
             if self.config.get('GENERATE_TAGS', True):
                 if PIPELINE_STAGE_GENERATE_TAGS in completed_stages:
@@ -3440,12 +3500,26 @@ class TaskProcessor:
             if prompt_key in self.config:
                 openai_config[prompt_key] = self.config[prompt_key]
         
-        # 如果标题已被 playlist 正则替换过，跳过标题 AI 翻译
+        # 如果标题已被 playlist 正则替换过，或未开启标题自动翻译，跳过标题 AI 翻译
+        task_translate_title = _should_translate_title_for_task(task, self.config, task_logger)
+        has_orig_title = bool(task.get('video_title_original'))
+        has_trans_title = bool(task.get('video_title_translated'))
         translate_title = bool(
-            self.config.get('TRANSLATE_TITLE', True)
-            and task.get('video_title_original')
-            and not task.get('video_title_translated')
+            task_translate_title
+            and has_orig_title
+            and not has_trans_title
         )
+
+        if translate_title:
+            task_logger.info(f"执行内容翻译：【启动标题翻译】(原标题: '{task.get('video_title_original')}')")
+        else:
+            if not task_translate_title:
+                task_logger.info("执行内容翻译：【不启动标题翻译】(原因: 自动翻译标题未开启)")
+            elif not has_orig_title:
+                task_logger.info("执行内容翻译：【不启动标题翻译】(原因: 缺少视频原始标题)")
+            elif has_trans_title:
+                task_logger.info(f"执行内容翻译：【不启动标题翻译】(原因: 已有译文标题: '{task.get('video_title_translated')}')")
+
         translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
 
         # 检查统一投稿简介（已由 _apply_playlist_overrides 写入 custom_description）

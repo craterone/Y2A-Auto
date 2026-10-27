@@ -363,6 +363,82 @@ class TestPlaylistMonitor(unittest.TestCase):
         tasks_res2 = playlist_monitor_manager.get_playlist_tasks(mon_id, order='asc')
         self.assertEqual(tasks_res2['total'], 4)
 
+    @patch.object(playlist_monitor_manager, '_run_check_async')
+    @patch.object(playlist_monitor_manager, 'fetch_playlist_details', return_value={'title': '翻译测试播放列表', 'description': '', 'channel_title': '', 'thumbnail_url': ''})
+    def test_09_translate_title_option(self, mock_fetch_details, mock_run_async):
+        """测试 Playlist 监控中是否自动翻译标题选项创建、更新与任务继承"""
+        from modules.task_manager import _should_translate_title_for_task, get_task
+        test_pid_1 = "PL_Trans_Title_On"
+        test_pid_2 = "PL_Trans_Title_Off"
+
+        with get_db_connection() as conn:
+            conn.execute("DELETE FROM tasks WHERE playlist_id IN (?, ?)", (test_pid_1, test_pid_2))
+            conn.execute("DELETE FROM playlist_monitors WHERE playlist_id IN (?, ?)", (test_pid_1, test_pid_2))
+            conn.commit()
+
+        # 1. 默认创建监控：translate_title 默认为 0 / False (默认不开启)
+        mon1 = playlist_monitor_manager.create_monitor(
+            playlist_id_input=test_pid_1,
+            custom_title="默认不开启翻译标题"
+        )
+        self.assertFalse(bool(mon1.get('translate_title')))
+
+        # 2. 显式创建开启自动翻译标题的监控
+        mon2 = playlist_monitor_manager.create_monitor(
+            playlist_id_input=test_pid_2,
+            custom_title="开启自动翻译标题",
+            translate_title=True
+        )
+        self.assertTrue(bool(mon2.get('translate_title')))
+
+        # 3. 更新 mon1 的 translate_title 为 True
+        updated_mon1 = playlist_monitor_manager.update_monitor(mon1['id'], {'translate_title': True})
+        self.assertTrue(bool(updated_mon1['translate_title']))
+
+        # 4. 再次更新为 False
+        updated_mon1_off = playlist_monitor_manager.update_monitor(mon1['id'], {'translate_title': False})
+        self.assertFalse(bool(updated_mon1_off['translate_title']))
+
+        # 5. 测试 RESTful API
+        app = flask_app_module.app
+        app.config['TESTING'] = True
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess['logged_in'] = True
+
+        api_pid = "PL_API_Trans_Test"
+        with get_db_connection() as conn:
+            conn.execute("DELETE FROM playlist_monitors WHERE playlist_id = ?", (api_pid,))
+            conn.commit()
+
+        # 默认创建不传 translate_title，应为 False
+        api_resp_def = client.post('/api/playlist-monitors', json={
+            'playlist_id': api_pid,
+        })
+        self.assertEqual(api_resp_def.status_code, 201)
+        api_mon = api_resp_def.get_json()['monitor']
+        self.assertFalse(bool(api_mon['translate_title']))
+
+        # 通过 API 修改为开启
+        put_resp = client.put(f"/api/playlist-monitors/{api_mon['id']}", json={
+            'translate_title': True
+        })
+        self.assertEqual(put_resp.status_code, 200)
+        self.assertTrue(bool(put_resp.get_json()['monitor']['translate_title']))
+
+        # 6. 测试任务添加时继承与 _should_translate_title_for_task
+        task_id_1 = add_task("https://www.youtube.com/watch?v=v_on", playlist_id=test_pid_1, playlist_monitor_id=mon1['id'], translate_title=True)
+        task_id_2 = add_task("https://www.youtube.com/watch?v=v_off", playlist_id=test_pid_2, playlist_monitor_id=mon2['id'], translate_title=False)
+
+        task_1 = get_task(task_id_1)
+        task_2 = get_task(task_id_2)
+
+        self.assertTrue(bool(task_1.get('translate_title')))
+        self.assertFalse(bool(task_2.get('translate_title')))
+
+        self.assertTrue(_should_translate_title_for_task(task_1))
+        self.assertFalse(_should_translate_title_for_task(task_2))
+
 
 if __name__ == '__main__':
     unittest.main()

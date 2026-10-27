@@ -522,6 +522,11 @@ def api_create_playlist_monitor():
         import_order = data.get('import_order', 'asc')
         title_pattern = data.get('title_pattern', '')
         title_template = data.get('title_template', '')
+        raw_translate_title = data.get('translate_title', False)
+        if isinstance(raw_translate_title, str):
+            translate_title = raw_translate_title.lower() in ('1', 'true', 'yes')
+        else:
+            translate_title = bool(raw_translate_title) if raw_translate_title is not None else False
 
         monitor = playlist_monitor_manager.create_monitor(
             playlist_id_input=playlist_id_input,
@@ -540,6 +545,7 @@ def api_create_playlist_monitor():
             import_order=import_order,
             title_pattern=str(title_pattern or '').strip(),
             title_template=str(title_template or '').strip(),
+            translate_title=translate_title,
         )
 
         return jsonify({

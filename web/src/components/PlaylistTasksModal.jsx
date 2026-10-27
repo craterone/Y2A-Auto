@@ -115,7 +115,7 @@ export function PlaylistTasksModal({ monitor, onClose, showToast }) {
               </span>
             </div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', marginTop: '4px' }}>
-              最大并发: {monitor?.max_concurrency || 1} · 检测周期: {monitor?.check_interval_minutes || 30} mins
+              最大并发: {monitor?.max_concurrency || 1} · 检测周期: {monitor?.check_interval_minutes || 30} mins · 自动翻译标题: {monitor?.translate_title ? '开启' : '关闭'}
             </div>
           </div>
 

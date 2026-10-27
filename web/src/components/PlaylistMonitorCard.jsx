@@ -9,6 +9,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
   const [maxImportPerCheck, setMaxImportPerCheck] = useState(10);
   const [importOrder, setImportOrder] = useState('asc');
   const [autoUpload, setAutoUpload] = useState(true);
+  const [translateTitle, setTranslateTitle] = useState(false);
   const [customDescription, setCustomDescription] = useState('');
   const [customTitle, setCustomTitle] = useState('');
   const [titlePattern, setTitlePattern] = useState('');
@@ -110,6 +111,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         max_concurrency: concurrency,
         upload_target: 'bilibili',
         auto_upload: autoUpload,
+        translate_title: translateTitle,
         custom_description: customDescription.trim(),
         enabled: true,
         custom_title: customTitle.trim() || undefined,
@@ -131,6 +133,7 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
         setTitlePattern('');
         setTitleTemplate('');
         setAutoUpload(true);
+        setTranslateTitle(false);
         setSelectedSeasonId('');
         setPreviewData(null);
         setCheckInterval(30);
@@ -412,6 +415,29 @@ export function PlaylistMonitorCard({ onMonitorCreated, showToast }) {
           </label>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginLeft: '26px', marginTop: '4px', display: 'block' }}>
             开启后，检测到的新视频将在前置处理完成后自动提交投稿至 Bilibili；若关闭，视频处理完毕后将停留在“准备上传”状态待人工确认发布。
+          </span>
+        </div>
+
+        {/* 自动翻译标题开关 */}
+        <div className="form-group" style={{
+          marginBottom: '16px',
+          background: 'rgba(255, 255, 255, 0.02)',
+          padding: '12px 16px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.06)'
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontSize: '0.88rem', fontWeight: 500 }}>
+            <input
+              type="checkbox"
+              checked={translateTitle}
+              onChange={(e) => setTranslateTitle(e.target.checked)}
+              disabled={isSubmitting}
+              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+            <span style={{ color: '#f1f5f9' }}>🌐 开启自动翻译标题（默认关闭）</span>
+          </label>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginLeft: '26px', marginTop: '4px', display: 'block' }}>
+            默认关闭。开启后，检测到的新视频将通过 AI 自动将原外文标题翻译为中文；关闭时保留原标题发布（或优先使用下方设置的正则替换规则）。
           </span>
         </div>
 
