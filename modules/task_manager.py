@@ -3618,13 +3618,28 @@ class TaskProcessor:
             return True
 
         review_message = translated.get('error_message') or _build_missing_translation_review_message(requested_fields)
-        updates.update({
-            'status': TASK_STATES['AWAITING_REVIEW'],
-            'error_message': review_message,
-            'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
-        })
-        update_task(task_id, **updates)
-        task_logger.warning(review_message)
+        failed_fields = translated.get('failed_fields') or {}
+
+        # 判断是否所有失败原因均为异常/不可恢复错误（如 API 异常、配置缺失）
+        # 这类情况没有产生任何有效译文，人工审核无意义，应直接标记为失败
+        from modules.ai_enhancer import is_hard_failure_metadata_translation
+        if is_hard_failure_metadata_translation(failed_fields):
+            error_message = review_message.replace("任务已转入人工审核", "任务已标记为失败")
+            updates.update({
+                'status': TASK_STATES['FAILED'],
+                'error_message': error_message,
+                'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
+            })
+            update_task(task_id, **updates)
+            task_logger.error(error_message)
+        else:
+            updates.update({
+                'status': TASK_STATES['AWAITING_REVIEW'],
+                'error_message': review_message,
+                'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
+            })
+            update_task(task_id, **updates)
+            task_logger.warning(review_message)
         return False
 
     def _ensure_required_translations_ready(self, task_id, task, task_logger, allow_missing_translations=False):

@@ -776,6 +776,38 @@ def _should_retry_metadata_translation_attempt(failed_fields: Mapping[str, Seque
     return False
 
 
+def _is_hard_failure_reason(reason: str) -> bool:
+    """判断单个失败原因是否属于不可恢复的硬性错误（异常/配置缺失等）。
+
+    这类错误即使进入人工审核也无法产生有效译文，应直接标记任务为失败。
+    """
+    normalized = safe_str(reason).strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith("exception:"):
+        return True
+    if normalized in {"missing_openai_config", "no_meaningful_content_after_preclean"}:
+        return True
+    return False
+
+
+def is_hard_failure_metadata_translation(failed_fields: Mapping[str, Sequence[str]]) -> bool:
+    """判断元数据翻译的所有失败字段是否都属于硬性错误。
+
+    当所有失败原因均为异常或不可恢复错误时返回 True，
+    此时任务应标记为 FAILED 而非 AWAITING_REVIEW。
+    """
+    if not failed_fields:
+        return False
+    for reasons in failed_fields.values():
+        if not reasons:
+            return False
+        for reason in reasons:
+            if not _is_hard_failure_reason(reason):
+                return False
+    return True
+
+
 def _humanize_metadata_failure_reason(reason: str) -> str:
     normalized = safe_str(reason).strip()
     lowered = normalized.lower()
