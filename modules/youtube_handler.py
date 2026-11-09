@@ -794,7 +794,6 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             '--retry-sleep', '3',  # 重试间隔
             '--ignore-errors',  # 忽略错误继续下载
             '--no-playlist',  # 不下载播放列表，仅下载单个视频
-            '--user-agent', _YOUTUBE_USER_AGENT,  # 设置User-Agent
         ]
         
         # 检查是否需要使用代理
