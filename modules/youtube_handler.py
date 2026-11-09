@@ -772,8 +772,9 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 else:
                     logger.warning("CookieCloud同步失败: %s", sync_info)
             if not available:
-                logger.error("视频不可用或无法访问")
-                return False, "视频不可用或无法访问"
+                detailed_error = f"视频不可用或无法访问: {error_msg}" if error_msg else "视频不可用或无法访问"
+                logger.error(detailed_error)
+                return False, detailed_error
 
         if not available and error_msg and _looks_like_youtube_bot_challenge(error_msg):
             # 对于同时存在格式/访问混合异常的场景，保留诊断日志但不阻塞后续下载重试

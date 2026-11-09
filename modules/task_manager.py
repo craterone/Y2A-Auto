@@ -504,6 +504,68 @@ def resolve_youtube_cookies_path(config, logger_obj=None):
     return None
 
 
+def is_cookie_required_error(error_text: Any) -> bool:
+    """判断错误信息是否表明需要 YouTube Cookie / 登录态 / 授权。"""
+    if not error_text:
+        return False
+    if isinstance(error_text, dict):
+        return False
+
+    text = str(error_text).lower()
+
+    indicators = (
+        "sign in to confirm",
+        "confirm you're not a bot",
+        "confirm you’re not a bot",
+        "not a bot",
+        "sign in to view",
+        "please sign in",
+        "sign in if you've been granted access",
+        "sign in to access",
+        "sign in to confirm your age",
+        "this video is only available to registered users",
+        "this video is private",
+        "private video",
+        "join this channel to get access",
+        "members-only",
+        "members only",
+        "age-restricted",
+        "age restricted",
+        "login required",
+        "log in",
+        "use --cookies",
+        "--cookies-from-browser",
+        "cookies are required",
+        "cookies-from-browser",
+        "cookie",
+        "cookies",
+        "http error 403",
+        "403: forbidden",
+        "signature extraction failed",
+        "the page needs to be reloaded",
+        "captcha",
+        "需要登录",
+        "需要 cookie",
+        "需要cookie",
+        "人机身份验证",
+        "人机验证",
+        "私享视频",
+        "会员专享",
+        "年龄限制",
+    )
+    if any(indicator in text for indicator in indicators):
+        return True
+
+    try:
+        from modules.youtube_handler import _looks_like_youtube_bot_challenge
+        if _looks_like_youtube_bot_challenge(str(error_text)):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def _get_task_upload_target(task, fallback=UPLOAD_TARGET_ACFUN):
     if not task:
         return normalize_upload_target(fallback)
@@ -3136,35 +3198,120 @@ class TaskProcessor:
         finally:
             _PENDING_DISPATCH_MUTEX.release()
     
+    def _get_valid_youtube_cookies_path(self, task_logger):
+        """解析并验证 YouTube Cookies 路径，若有效则返回绝对路径，否则返回 None。"""
+        cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
+        if not cookies_path:
+            return None
+        is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
+        if not is_valid:
+            task_logger.warning(f"YouTube Cookies验证未通过: {error_msg}")
+            return None
+        return cookies_path
+
+    def _download_video_data_with_cookie_fallback(
+        self,
+        task_id: str,
+        youtube_url: str,
+        task_logger,
+        skip_download: bool = False,
+        only_video: bool = False,
+        progress_callback = None,
+    ):
+        """下载视频数据或采集信息：普通下载不带 Cookie，仅当报错需要 Cookie 时带上 Cookie 重试。"""
+        from modules.youtube_handler import download_video_data
+
+        cancel_event = get_task_cancel_event(task_id)
+        _raise_if_cancelled(task_id, task_logger)
+
+        # 1. 首次尝试：普通下载不带 Cookie
+        success = False
+        result = None
+        first_error_for_cookie = None
+
+        try:
+            success, result = download_video_data(
+                youtube_url,
+                task_id,
+                cookies_file_path=None,
+                skip_download=skip_download,
+                only_video=only_video,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+            )
+            if not success:
+                first_error_for_cookie = str(result)
+        except TaskCancelledError:
+            raise
+        except Exception as e:
+            if is_task_cancelled(task_id):
+                task_logger.info("下载过程中检测到任务取消请求")
+                raise TaskCancelledError("任务已取消")
+            first_error_for_cookie = str(e)
+            result = str(e)
+
+        if success:
+            return True, result
+
+        # 2. 检查是否检测到任务取消
+        if is_task_cancelled(task_id):
+            task_logger.info("检测到任务取消请求，终止后续操作")
+            raise TaskCancelledError("任务已取消")
+
+        # 3. 检查失败原因是否指示需要 Cookie
+        if not is_cookie_required_error(first_error_for_cookie):
+            task_logger.info("下载失败但未检测到需要 Cookie 的错误特征，跳过 Cookie 重试")
+            return False, result
+
+        # 4. 报错需要 Cookie，尝试获取并验证本地 Cookies
+        task_logger.warning(
+            f"检测到可能需要 Cookie 或登录验证 (错误信息: {first_error_for_cookie})，准备带上 Cookie 重试..."
+        )
+        cookies_path = self._get_valid_youtube_cookies_path(task_logger)
+        if not cookies_path:
+            task_logger.error("检测到需要 YouTube Cookie，但未找到或未配置有效的 Cookies 文件")
+            return False, f"需要 YouTube Cookie 但未配置有效凭证: {first_error_for_cookie}"
+
+        _raise_if_cancelled(task_id, task_logger)
+        task_logger.info(f"带上 YouTube Cookies 重新尝试: {cookies_path}")
+
+        try:
+            success, result = download_video_data(
+                youtube_url,
+                task_id,
+                cookies_file_path=cookies_path,
+                skip_download=skip_download,
+                only_video=only_video,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+            )
+            return success, result
+        except TaskCancelledError:
+            raise
+        except Exception as retry_e:
+            if is_task_cancelled(task_id):
+                task_logger.info("重试过程中检测到任务取消请求")
+                raise TaskCancelledError("任务已取消")
+            task_logger.error(f"带 Cookie 重试执行时发生异常: {str(retry_e)}")
+            return False, f"带 Cookie 重试异常: {str(retry_e)}"
+
     def _fetch_video_info(self, task_id, youtube_url, task_logger):
         """只采集视频元数据和封面，不下载视频文件"""
-        from modules.youtube_handler import download_video_data
         task_logger.info(f"采集视频信息: {youtube_url}")
         update_task(task_id, status='fetching_info')
 
         _raise_if_cancelled(task_id, task_logger)
-        
-        cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
-        
-        # 验证cookies文件
-        if cookies_path:
-            is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
-            if not is_valid:
-                task_logger.error(f"YouTube Cookies验证失败: {error_msg}")
-                # 尝试不使用cookies继续
-                task_logger.info("尝试不使用cookies继续采集信息...")
-                cookies_path = None
-                
-        # 只采集信息
+
         try:
-            cancel_event = get_task_cancel_event(task_id)
-            success, result = download_video_data(
-                youtube_url,
-                task_id,
-                cookies_path,
+            success, result = self._download_video_data_with_cookie_fallback(
+                task_id=task_id,
+                youtube_url=youtube_url,
+                task_logger=task_logger,
                 skip_download=True,
-                cancel_event=cancel_event
             )
+        except TaskCancelledError:
+            task_logger.info("采集信息过程中检测到任务取消请求")
+            raise
         except Exception as e:
             if is_task_cancelled(task_id):
                 task_logger.info("采集信息过程中检测到任务取消请求")
@@ -3172,10 +3319,14 @@ class TaskProcessor:
             task_logger.error(f"采集视频信息时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息异常: {str(e)}")
             return
-            
+
+        if is_task_cancelled(task_id):
+            task_logger.info("采集信息完成前检测到任务取消请求")
+            raise TaskCancelledError("任务已取消")
+
         if success:
             task_logger.info("视频信息采集成功")
-            metadata_path = result.get('metadata_path')
+            metadata_path = result.get('metadata_path') if isinstance(result, dict) else None
             video_title = ""
             video_description = ""
             if metadata_path and os.path.exists(metadata_path):
@@ -3191,7 +3342,7 @@ class TaskProcessor:
                 status='info_fetched',
                 video_title_original=video_title,
                 description_original=video_description,
-                cover_path_local=result.get('cover_path', ''),
+                cover_path_local=result.get('cover_path', '') if isinstance(result, dict) else '',
                 metadata_json_path_local=metadata_path
             )
         else:
@@ -3200,33 +3351,21 @@ class TaskProcessor:
 
     def _download_video_file(self, task_id, youtube_url, task_logger):
         """审核通过后下载视频文件"""
-        from modules.youtube_handler import download_video_data
         task_logger.info(f"审核通过，开始下载视频文件: {youtube_url}")
         update_task(task_id, status=TASK_STATES['DOWNLOADING'])
 
         _raise_if_cancelled(task_id, task_logger)
-        
-        cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
-        
-        # 验证cookies文件
-        if cookies_path:
-            is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
-            if not is_valid:
-                task_logger.error(f"YouTube Cookies验证失败: {error_msg}")
-                # 尝试不使用cookies继续
-                task_logger.info("尝试不使用cookies继续下载...")
-                cookies_path = None
-                
+
         # 定义进度回调函数
         def progress_callback(progress_info):
             percent = progress_info.get('percent', 0)
             file_size = progress_info.get('file_size', '')
             speed = progress_info.get('speed', '')
             eta = progress_info.get('eta', '')
-            
+
             # 只显示百分比，简洁明了
             progress_msg = f"{percent:.1f}%"
-            
+
             # 详细信息记录到日志
             detailed_msg = progress_msg
             if file_size:
@@ -3235,23 +3374,23 @@ class TaskProcessor:
                 detailed_msg += f" @ {speed}"
             if eta:
                 detailed_msg += f" ETA {eta}"
-            
+
             # 不再把每次下载进度记录为 INFO 到文件，以减少日志噪声；保留网页进度显示
             task_logger.debug(f"下载进度: {detailed_msg}")
             # 更新任务的上传进度字段用于显示（只显示百分比）
             update_task(task_id, upload_progress=progress_msg, silent=True)
-        
-        # 只下载视频文件
+
         try:
-            cancel_event = get_task_cancel_event(task_id)
-            success, result = download_video_data(
-                youtube_url,
-                task_id,
-                cookies_path,
+            success, result = self._download_video_data_with_cookie_fallback(
+                task_id=task_id,
+                youtube_url=youtube_url,
+                task_logger=task_logger,
                 only_video=True,
                 progress_callback=progress_callback,
-                cancel_event=cancel_event
             )
+        except TaskCancelledError:
+            task_logger.info("下载过程中检测到任务取消请求")
+            raise
         except Exception as e:
             if is_task_cancelled(task_id):
                 task_logger.info("下载过程中检测到任务取消请求")
@@ -3259,32 +3398,34 @@ class TaskProcessor:
             task_logger.error(f"下载视频文件时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载异常: {str(e)}")
             return
+
         if is_task_cancelled(task_id):
             task_logger.info("下载完成前检测到任务取消请求")
             raise TaskCancelledError("任务已取消")
+
         if success:
             task_logger.info("视频文件下载成功")
-            
+
             # 获取当前任务信息
             task = get_task(task_id)
-            
+
             update_data = {
                 'status': TASK_STATES['DOWNLOADED'],
-                'video_path_local': result.get('video_path', ''),
+                'video_path_local': result.get('video_path', '') if isinstance(result, dict) else '',
                 'upload_progress': None  # 清除进度显示
             }
-            
+
             # 如果结果中包含元数据和封面信息，保存这些信息
             # 这是因为我们修改了download_video_data函数，使其在only_video=True时也能返回之前保存的元数据和封面
-            if task is not None:
+            if task is not None and isinstance(result, dict):
                 if result.get('metadata_path') and not task.get('metadata_json_path_local'):
                     update_data['metadata_json_path_local'] = result.get('metadata_path')
-                    
+
                 if result.get('cover_path') and not task.get('cover_path_local'):
                     update_data['cover_path_local'] = result.get('cover_path')
-            else:
+            elif task is None:
                 task_logger.warning("任务对象为 None，无法更新元数据和封面信息")
-                
+
             update_task(task_id, **update_data)
         else:
             task_logger.error(f"视频文件下载失败: {result}")
@@ -3380,14 +3521,9 @@ class TaskProcessor:
                 youtube_url,
             ]
 
-            cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
-
-            if cookies_path:
-                cookies_path = _resolve_safe_cookies_path(cookies_path, task_logger)
-
             config = self.config
             proxy_url = build_proxy_url(config)
-            _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+            _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=None)
 
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=120,
@@ -3396,6 +3532,34 @@ class TaskProcessor:
             task_logger.debug(f"yt-dlp 封面采集输出: {proc.stdout}")
             if proc.returncode != 0:
                 task_logger.warning(f"yt-dlp 封面采集返回非零状态: {proc.returncode}, stderr: {proc.stderr}")
+                combined_err = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+                if is_cookie_required_error(combined_err):
+                    cookies_path = self._get_valid_youtube_cookies_path(task_logger)
+                    if cookies_path:
+                        cookies_path = _resolve_safe_cookies_path(cookies_path, task_logger)
+                    if cookies_path:
+                        task_logger.info(f"重新采集封面检测到需要 Cookie，带上 YouTube Cookies 重试: {cookies_path}")
+                        retry_cmd = yt_dlp_cmd + [
+                            '-o', os.path.join(task_dir, 'video.%(ext)s'),
+                            '--write-thumbnail',
+                            '--skip-download',
+                            '--no-write-info-json',
+                            '--no-playlist',
+                            '--ignore-no-formats-error',
+                            youtube_url,
+                        ]
+                        _append_yt_dlp_network_args(retry_cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+                        proc = subprocess.run(
+                            retry_cmd, capture_output=True, text=True, timeout=120,
+                            encoding='utf-8', errors='replace',
+                        )
+                        task_logger.debug(f"yt-dlp 封面采集(带Cookie重试)输出: {proc.stdout}")
+                        if proc.returncode != 0:
+                            task_logger.warning(
+                                f"yt-dlp 封面采集(带Cookie重试)返回非零状态: {proc.returncode}, stderr: {proc.stderr}"
+                            )
+                    else:
+                        task_logger.warning("重新采集封面检测到需要 Cookie，但未找到有效 YouTube Cookies")
 
             # yt-dlp 使用 -o video.%(ext)s 模板，但缩略图扩展名/文件名并不一定严格固定。
             # 重新扫描任务目录，优先匹配 video*.{jpg,jpeg,png,webp}，再回退到目录内其他图片文件。
