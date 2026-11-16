@@ -191,7 +191,9 @@
         </div>
 
         <div class="mt-2">
-            {% if target == 'both' and (task.acfun_upload_response or task.bilibili_upload_response) %}
+            {% if task.bilibili_upload_response == 'members-only' or task.acfun_upload_response == 'members-only' %}
+                <span class="badge bg-warning text-dark">members-only</span>
+            {% elif target == 'both' and (task.acfun_upload_response or task.bilibili_upload_response) %}
                 {% set ac_result = parse_json(task.acfun_upload_response) if task.acfun_upload_response else {} %}
                 {% set bili_result = parse_json(task.bilibili_upload_response) if task.bilibili_upload_response else {} %}
                 {% if bili_result and bili_result.bvid %}

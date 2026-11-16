@@ -1727,7 +1727,9 @@ def old():
             upload_id = None
             upload_target = (r[5] or 'acfun').lower()
             try:
-                if upload_target == 'both':
+                if r[6] == 'members-only' or r[7] == 'members-only':
+                    upload_id = 'members-only'
+                elif upload_target == 'both':
                     resp_b = json.loads(r[7]) if r[7] else None
                     resp_a = json.loads(r[6]) if r[6] else None
                     bv = resp_b.get('bvid') if isinstance(resp_b, dict) else None

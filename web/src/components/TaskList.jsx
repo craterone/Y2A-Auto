@@ -199,14 +199,43 @@ export function TaskList({
         biliRes = typeof task.bilibili_upload_response === 'string'
           ? JSON.parse(task.bilibili_upload_response)
           : task.bilibili_upload_response;
-      } catch {}
+      } catch {
+        biliRes = task.bilibili_upload_response;
+      }
     }
     if (task.acfun_upload_response) {
       try {
         acRes = typeof task.acfun_upload_response === 'string'
           ? JSON.parse(task.acfun_upload_response)
           : task.acfun_upload_response;
-      } catch {}
+      } catch {
+        acRes = task.acfun_upload_response;
+      }
+    }
+
+    const isMembersOnly =
+      task.bilibili_upload_response === 'members-only' ||
+      task.acfun_upload_response === 'members-only' ||
+      biliRes === 'members-only' ||
+      acRes === 'members-only' ||
+      (typeof biliRes === 'object' && biliRes && (biliRes.status === 'members-only' || biliRes.message === 'members-only')) ||
+      (typeof acRes === 'object' && acRes && (acRes.status === 'members-only' || acRes.message === 'members-only'));
+
+    if (isMembersOnly) {
+      return (
+        <span
+          className="badge"
+          style={{
+            background: 'rgba(234, 179, 8, 0.15)',
+            color: '#eab308',
+            border: '1px solid rgba(234, 179, 8, 0.3)',
+            fontSize: '0.72rem',
+            padding: '2px 8px',
+          }}
+        >
+          members-only
+        </span>
+      );
     }
 
     const results = [];

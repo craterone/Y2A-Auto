@@ -45,6 +45,8 @@ def _task_title(payload: dict[str, Any]) -> str:
 
 
 def _task_platform_result(payload: dict[str, Any]) -> str:
+    if payload.get("members_only"):
+        return "members-only"
     succeeded = []
     if payload.get("acfun_uploaded"):
         succeeded.append("AcFun")

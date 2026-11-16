@@ -566,6 +566,27 @@ def is_cookie_required_error(error_text: Any) -> bool:
     return False
 
 
+def is_members_only_error(error_text: Any) -> bool:
+    """判断错误信息是否表明属于 YouTube 会员专属视频 (members-only)。"""
+    try:
+        from modules.youtube_handler import is_members_only_error as _is_members_only_error
+        return _is_members_only_error(error_text)
+    except Exception:
+        if not error_text or isinstance(error_text, dict):
+            return False
+        text = str(error_text).lower()
+        return any(ind in text for ind in (
+            "members-only",
+            "members only",
+            "join this channel to get access",
+            "this video is available to this channel's members",
+            "members on level",
+            "仅限会员",
+            "会员专享",
+            "会员专属",
+        ))
+
+
 def _get_task_upload_target(task, fallback=UPLOAD_TARGET_ACFUN):
     if not task:
         return normalize_upload_target(fallback)
@@ -599,6 +620,9 @@ def _build_task_notification_payload(task, overrides=None) -> dict:
     merged_task = dict(task or {})
     if overrides:
         merged_task.update(overrides)
+    ac_resp = str(merged_task.get('acfun_upload_response') or '')
+    bili_resp = str(merged_task.get('bilibili_upload_response') or '')
+    is_members_only = ac_resp == 'members-only' or bili_resp == 'members-only'
     return {
         'task_id': str(merged_task.get('id') or '').strip(),
         'youtube_url': str(merged_task.get('youtube_url') or '').strip(),
@@ -609,8 +633,9 @@ def _build_task_notification_payload(task, overrides=None) -> dict:
         'error_message': str(merged_task.get('error_message') or '').strip(),
         'asr_warning_message': str(merged_task.get('asr_warning_message') or '').strip(),
         'subtitle_warning_message': str(merged_task.get('subtitle_warning_message') or '').strip(),
-        'acfun_uploaded': bool(merged_task.get('acfun_upload_response')),
-        'bilibili_uploaded': bool(merged_task.get('bilibili_upload_response')),
+        'acfun_uploaded': bool(merged_task.get('acfun_upload_response')) and not is_members_only,
+        'bilibili_uploaded': bool(merged_task.get('bilibili_upload_response')) and not is_members_only,
+        'members_only': is_members_only,
     }
 
 
@@ -2848,6 +2873,9 @@ class TaskProcessor:
                 if task is None:
                     task_logger.error("重新获取任务对象为None，终止任务处理")
                     return
+                if task['status'] == TASK_STATES['COMPLETED']:
+                    task_logger.info("任务已标记为完成（例如 members-only 跳过），终止后续处理")
+                    return
                 if task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("采集视频信息失败，终止任务处理")
                     return
@@ -2943,6 +2971,9 @@ class TaskProcessor:
                 self._download_video_file(task_id, task['youtube_url'], task_logger)
                 _raise_if_cancelled(task_id, task_logger)
                 task = get_task(task_id)
+                if task is not None and task['status'] == TASK_STATES['COMPLETED']:
+                    task_logger.info("任务已标记为完成（例如 members-only 跳过），终止后续处理")
+                    return
                 if task is not None and task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("下载视频文件失败，终止任务处理")
                     return
@@ -3264,11 +3295,19 @@ class TaskProcessor:
             return False, result
 
         # 4. 报错需要 Cookie，尝试获取并验证本地 Cookies
-        task_logger.warning(
-            f"检测到可能需要 Cookie 或登录验证 (错误信息: {first_error_for_cookie})，准备带上 Cookie 重试..."
-        )
+        if is_members_only_error(first_error_for_cookie):
+            task_logger.info(
+                f"检测到可能为 YouTube 会员专属 (members-only) 视频 (错误信息: {first_error_for_cookie})，准备检查是否配置了 Cookie..."
+            )
+        else:
+            task_logger.warning(
+                f"检测到可能需要 Cookie 或登录验证 (错误信息: {first_error_for_cookie})，准备带上 Cookie 重试..."
+            )
         cookies_path = self._get_valid_youtube_cookies_path(task_logger)
         if not cookies_path:
+            if is_members_only_error(first_error_for_cookie):
+                task_logger.info("检测到 members-only 视频且未配置有效 YouTube Cookies 文件，跳过 Cookie 重试")
+                return False, first_error_for_cookie
             task_logger.error("检测到需要 YouTube Cookie，但未找到或未配置有效的 Cookies 文件")
             return False, f"需要 YouTube Cookie 但未配置有效凭证: {first_error_for_cookie}"
 
@@ -3316,6 +3355,10 @@ class TaskProcessor:
             if is_task_cancelled(task_id):
                 task_logger.info("采集信息过程中检测到任务取消请求")
                 raise TaskCancelledError("任务已取消")
+            if is_members_only_error(str(e)):
+                task_logger.info(f"采集视频信息时检测到 members-only 视频，跳过后续处理: {str(e)}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"采集视频信息时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息异常: {str(e)}")
             return
@@ -3346,6 +3389,10 @@ class TaskProcessor:
                 metadata_json_path_local=metadata_path
             )
         else:
+            if is_members_only_error(result):
+                task_logger.info(f"采集视频信息时检测到 members-only 视频，跳过后续处理: {result}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"视频信息采集失败: {result}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息失败: {result}")
 
@@ -3395,6 +3442,10 @@ class TaskProcessor:
             if is_task_cancelled(task_id):
                 task_logger.info("下载过程中检测到任务取消请求")
                 raise TaskCancelledError("任务已取消")
+            if is_members_only_error(str(e)):
+                task_logger.info(f"检测到 members-only 视频，跳过下载与上传: {str(e)}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"下载视频文件时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载异常: {str(e)}")
             return
@@ -3428,8 +3479,34 @@ class TaskProcessor:
 
             update_task(task_id, **update_data)
         else:
+            if is_members_only_error(result):
+                task_logger.info(f"检测到 members-only 视频，跳过下载与上传: {result}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"视频文件下载失败: {result}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载视频失败: {result}")
+
+    def _mark_task_members_only(self, task_id: str, task_logger=None) -> None:
+        """遇到 members-only 视频时直接跳过，显示已完成，上传结果显示 members-only。"""
+        task = get_task(task_id)
+        upload_target = _get_task_upload_target(task)
+
+        updates = {
+            'status': TASK_STATES['COMPLETED'],
+            'error_message': None,
+            'upload_progress': None,
+        }
+        if upload_target == UPLOAD_TARGET_BOTH:
+            updates['acfun_upload_response'] = 'members-only'
+            updates['bilibili_upload_response'] = 'members-only'
+        elif upload_target == UPLOAD_TARGET_BILIBILI:
+            updates['bilibili_upload_response'] = 'members-only'
+        else:
+            updates['acfun_upload_response'] = 'members-only'
+
+        update_task(task_id, **updates)
+        if task_logger:
+            task_logger.info("检测到 members-only 会员专属视频，已直接跳过，任务状态更新为已完成，上传结果记录为 members-only")
 
     def _recover_cover_path(self, task_id, cover_path, task_logger):
         """尝试恢复缺失的封面文件路径。
@@ -8601,6 +8678,9 @@ class TaskProcessor:
             
             # 重新获取任务信息
             task = get_task(task_id)
+            if task and task.get('status') in (TASK_STATES['FAILED'], TASK_STATES['COMPLETED']):
+                task_logger.info("任务已处于完成或失败状态（如 members-only 跳过），终止 AcFun 上传")
+                return
             video_path = task.get('video_path_local', '') if task else ''
             cover_path = task.get('cover_path_local', '') if task else ''
         
@@ -8829,6 +8909,9 @@ class TaskProcessor:
 
             self._download_video_file(task_id, youtube_url, task_logger)
             task = get_task(task_id)
+            if task and task.get('status') in (TASK_STATES['FAILED'], TASK_STATES['COMPLETED']):
+                task_logger.info("任务已处于完成或失败状态（如 members-only 跳过），终止 Bilibili 上传")
+                return
             video_path = task.get('video_path_local', '') if task else ''
             cover_path = task.get('cover_path_local', '') if task else ''
 
