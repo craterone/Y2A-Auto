@@ -121,8 +121,12 @@ MONITOR_CONFIG_DB_FIELDS: Tuple[str, ...] = tuple(MONITOR_CONFIG_FIELD_DEFAULTS.
 class YouTubeMonitor:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
-        self.youtube: Optional[Any] = None
-        self.youtube_http: Optional[httplib2.Http] = None
+        self._local = threading.local()
+        self._api_lock = threading.RLock()
+        self._config_version = 0
+        self._current_config: Dict[str, Any] = {}
+        self._global_youtube: Optional[Any] = None
+        self._global_youtube_http: Optional[httplib2.Http] = None
         self.scheduler = BackgroundScheduler()
         self.db_path = os.path.join(get_app_subdir('db'), 'youtube_monitor.db')
         self._last_fetch_had_errors = False
@@ -130,6 +134,36 @@ class YouTubeMonitor:
         self._last_api_init_error: Optional[str] = None
         self._init_database()
         self._init_youtube_api()
+
+    @property
+    def youtube(self) -> Optional[Any]:
+        """获取 YouTube API 客户端，优先返回当前线程独立的专属客户端以确保线程安全"""
+        thread_client = self.get_thread_client()
+        if thread_client is not None:
+            return thread_client
+        return getattr(self, '_global_youtube', None)
+
+    @youtube.setter
+    def youtube(self, val: Optional[Any]):
+        self._global_youtube = val
+        if not hasattr(self, '_local'):
+            self._local = threading.local()
+        self._local.youtube = val
+        self._local.config_version = getattr(self, '_config_version', 0)
+
+    @property
+    def youtube_http(self) -> Optional[httplib2.Http]:
+        """获取当前使用的 HTTP transport 实例"""
+        if hasattr(self, '_local') and getattr(self._local, 'youtube_http', None) is not None:
+            return self._local.youtube_http
+        return getattr(self, '_global_youtube_http', None)
+
+    @youtube_http.setter
+    def youtube_http(self, val: Optional[httplib2.Http]):
+        self._global_youtube_http = val
+        if not hasattr(self, '_local'):
+            self._local = threading.local()
+        self._local.youtube_http = val
         
     def _init_database(self):
         """初始化数据库"""
@@ -454,11 +488,22 @@ class YouTubeMonitor:
 
     def _init_youtube_api(self, runtime_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """初始化 YouTube API，并显式控制是否走独立代理。"""
+        if not hasattr(self, '_local'):
+            self._local = threading.local()
+        if not hasattr(self, '_api_lock'):
+            self._api_lock = threading.RLock()
+        if not hasattr(self, '_config_version'):
+            self._config_version = 0
+
         if runtime_config is None:
             config = dict(load_config() or {})
         else:
             config = dict(runtime_config)
+
+        self._current_config = dict(config)
         self.api_key = str(config.get('YOUTUBE_API_KEY') or self.api_key or '').strip()
+        self._config_version += 1
+
         self.youtube = None
         self.youtube_http = None
         self._api_proxy_enabled = False
@@ -470,13 +515,15 @@ class YouTubeMonitor:
             return False, API_INIT_STATUS_MISSING_API_KEY
 
         try:
-            self.youtube_http = self._build_youtube_http(config)
-            self.youtube = build(
+            http_instance = self._build_youtube_http(config)
+            client_instance = build(
                 'youtube',
                 'v3',
                 developerKey=self.api_key,
-                http=self.youtube_http,
+                http=http_instance,
             )
+            self.youtube_http = http_instance
+            self.youtube = client_instance
             status_code = self._get_api_init_success_status()
             self._last_api_init_error = None
             if status_code == API_INIT_STATUS_PROXY_READY:
@@ -490,6 +537,82 @@ class YouTubeMonitor:
             self._last_api_init_error = API_INIT_STATUS_INIT_FAILED
             logger.error('YouTube API 初始化失败，请检查 API 密钥、代理配置与网络连通性。')
             return False, API_INIT_STATUS_INIT_FAILED
+
+    def get_thread_client(self) -> Optional[Any]:
+        """
+        获取当前线程独立的 YouTube API 客户端。
+        在多线程环境下保证每个线程拥有独立的 Http 传输实例和底层连接，杜绝串包与并发冲突。
+        """
+        if not hasattr(self, '_local'):
+            self._local = threading.local()
+        if not hasattr(self, '_config_version'):
+            self._config_version = 0
+
+        # 若全局 API 未就绪（未初始化成功或被显式置空），直接返回 None
+        if getattr(self, '_global_youtube', None) is None:
+            return None
+
+        # 检查当前线程已缓存的 client 是否有效且版本最新
+        thread_client = getattr(self._local, 'youtube', None)
+        thread_version = getattr(self._local, 'config_version', -1)
+        if thread_client is not None and thread_version == self._config_version:
+            return thread_client
+
+        # 获取当前运行配置
+        cfg = getattr(self, '_current_config', None)
+        if not cfg:
+            cfg = dict(load_config() or {})
+            self._current_config = cfg
+
+        api_key = str(cfg.get('YOUTUBE_API_KEY') or self.api_key or '').strip()
+        if not api_key:
+            return getattr(self, '_global_youtube', None)
+
+        lock = getattr(self, '_api_lock', None)
+        if lock is None:
+            lock = threading.RLock()
+            self._api_lock = lock
+
+        with lock:
+            if getattr(self, '_global_youtube', None) is None:
+                return None
+            try:
+                thread_http = self._build_youtube_http(cfg)
+                thread_client = build(
+                    'youtube',
+                    'v3',
+                    developerKey=api_key,
+                    http=thread_http,
+                )
+                self._local.youtube = thread_client
+                self._local.youtube_http = thread_http
+                self._local.config_version = self._config_version
+                return thread_client
+            except Exception as e:
+                logger.error(f"为当前线程创建独立 YouTube API 客户端失败: {e}")
+                return getattr(self, '_global_youtube', None)
+
+    def _rebuild_thread_client(self) -> Optional[Any]:
+        """仅重置并重建当前线程的 HTTP 传输连接与客户端，杜绝并发全局污染"""
+        if not hasattr(self, '_local'):
+            self._local = threading.local()
+
+        old_http = getattr(self._local, 'youtube_http', None)
+        if old_http and hasattr(old_http, 'connections') and isinstance(old_http.connections, dict):
+            try:
+                for conn in list(old_http.connections.values()):
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                old_http.connections.clear()
+            except Exception:
+                pass
+
+        self._local.youtube = None
+        self._local.youtube_http = None
+        self._local.config_version = -1
+        return self.get_thread_client()
 
     def reload_api_client(self, runtime_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """根据当前配置重建监控 API 客户端。"""
@@ -1418,11 +1541,19 @@ class YouTubeMonitor:
             raise
 
     def _execute_with_retry(self, request: Any, description: str, max_attempts: int = 3, backoff_seconds: float = 1.0) -> Any:
-        """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题"""
+        """对YouTube API请求执行带重试的调用，用于处理临时性网络/SSL问题，确保线程独立传输"""
         attempt = 0
         last_exception: Optional[Exception] = None
         while attempt < max_attempts:
             try:
+                # 优先使用当前线程独立的 http 传输对象
+                thread_http = getattr(self._local, 'youtube_http', None) if hasattr(self, '_local') else None
+                if thread_http is not None:
+                    try:
+                        return request.execute(http=thread_http)
+                    except TypeError:
+                        # 兼容自定义或未接受 http 关键字参数的 mock request
+                        return request.execute()
                 return request.execute()
             except HttpError as e:
                 # 对于5xx或已知可重试错误进行重试
@@ -1440,13 +1571,14 @@ class YouTubeMonitor:
                     else:
                         raise
             except ssl.SSLError as e:
-                # 记录并重试，同时尝试重建客户端
+                # 记录并重试，仅为当前线程安全重建连接，绝不全局破坏其他线程
                 last_exception = e
-                logger.warning(f"SSL错误，准备重试并重建API客户端: {str(e)}")
-                self._init_youtube_api()
+                logger.warning(f"SSL错误，仅为当前线程重置HTTP连接与客户端: {str(e)}")
+                self._rebuild_thread_client()
             except OSError as e:
-                # 网络层错误，重试
+                # 网络层错误，重试前清理当前线程已有连接
                 last_exception = e
+                self._rebuild_thread_client()
             attempt += 1
             sleep_time = backoff_seconds * (2 ** (attempt - 1))
             logger.warning(f"调用 {description} 失败（第 {attempt} 次），{type(last_exception).__name__}: {last_exception}，{sleep_time:.1f}s 后重试...")

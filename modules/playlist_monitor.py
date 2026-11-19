@@ -213,13 +213,22 @@ class PlaylistMonitorManager:
             conn.close()
 
     def _get_youtube_client(self):
-        """获取已初始化的 YouTube API Client"""
+        """获取已初始化的 YouTube API Client（优先获取当前线程专属客户端，避免并发竞争）"""
+        if hasattr(youtube_monitor, 'get_thread_client'):
+            client = youtube_monitor.get_thread_client()
+            if client:
+                return client
         if youtube_monitor.youtube:
             return youtube_monitor.youtube
         cfg = load_config()
         ok, _ = youtube_monitor.reload_api_client(cfg)
-        if ok and youtube_monitor.youtube:
-            return youtube_monitor.youtube
+        if ok:
+            if hasattr(youtube_monitor, 'get_thread_client'):
+                client = youtube_monitor.get_thread_client()
+                if client:
+                    return client
+            if youtube_monitor.youtube:
+                return youtube_monitor.youtube
         return None
 
     def fetch_playlist_details(self, playlist_id: str) -> Dict[str, Any]:
