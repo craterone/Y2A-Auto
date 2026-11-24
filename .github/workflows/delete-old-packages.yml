@@ -19,7 +19,7 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
-          REPO: fqscfqj/y2a-auto
+          REPO: zombiecong/y2a-auto
           KEEP_LAST: 12
         run: |
           set -euo pipefail

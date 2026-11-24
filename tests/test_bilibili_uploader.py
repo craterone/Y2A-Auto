@@ -2,25 +2,35 @@ import asyncio
 import os
 import tempfile
 import unittest
+import logging
 from unittest.mock import AsyncMock, Mock, patch
 
 from modules.bili_sdk.exceptions.NetworkException import NetworkException
 from modules.bili_sdk.utils.AsyncEvent import AsyncEvent
 from modules.bili_sdk.video_uploader import (
+    Lines,
     VideoUploader,
     VideoUploaderEvents,
     VideoUploaderPage,
+    _choose_line,
+    _probe,
 )
 from modules.bilibili_uploader import BilibiliUploader, _BilibiliChunkProgress
 
 
 class _FakeResponse:
-    def __init__(self, code=200, text="MULTIPART_PUT_SUCCESS"):
+    def __init__(self, code=200, text="MULTIPART_PUT_SUCCESS", json_data=None):
         self.code = code
         self._text = text
+        self._json_data = json_data
 
     def utf8_text(self):
         return self._text
+
+    def json(self):
+        if self._json_data is not None:
+            return self._json_data
+        return {}
 
 
 class BilibiliSdkChunkRetryTests(unittest.TestCase):
@@ -196,6 +206,10 @@ class BilibiliProgressTests(unittest.TestCase):
             async def start(self):
                 page = self.pages[0]
                 self.dispatch(
+                    VideoUploaderEvents.CHOOSE_LINE.value,
+                    {"line": {"upcdn": "bda2"}},
+                )
+                self.dispatch(
                     VideoUploaderEvents.CHUNK_FAILED.value,
                     {
                         "page": page,
@@ -278,9 +292,172 @@ class BilibiliProgressTests(unittest.TestCase):
             ["0.0%", "31.7%", "63.3%", "95.0%", "96.0%", "98.0%", "99.0%", "100.0%"],
         )
         log_messages = [call.args[0] for call in logger.info.call_args_list]
+        self.assertTrue(any("选择上传线路: bda2" in item for item in log_messages))
         self.assertTrue(any("尝试 1/3，1 秒后重试" in item for item in log_messages))
         self.assertTrue(any("正在提交分P" in item for item in log_messages))
         self.assertTrue(any("正在提交Bilibili投稿" in item for item in log_messages))
+
+
+class BilibiliLineSelectionTests(unittest.TestCase):
+    def test_choose_line_with_specified_line(self):
+        with patch("modules.bili_sdk.video_uploader.logger") as mock_logger:
+            result = asyncio.run(_choose_line(Lines.WS))
+            self.assertEqual(result["upcdn"], "ws")
+            mock_logger.info.assert_any_call("[VideoUploader] 选择上传线路: ws (指定线路)")
+
+    def test_choose_line_with_probe(self):
+        mock_client = Mock()
+        mock_client.request = AsyncMock(return_value=_FakeResponse(200))
+
+        with patch(
+            "modules.bili_sdk.video_uploader.get_client", return_value=mock_client
+        ), patch("modules.bili_sdk.video_uploader.logger") as mock_logger:
+            result = asyncio.run(_choose_line(None))
+            self.assertIsNotNone(result)
+            self.assertIn("upcdn", result)
+
+            logged_lines = [call.args[0] for call in mock_logger.info.call_args_list if call.args]
+            self.assertTrue(any("开始测试所有线路速度" in text for text in logged_lines))
+            self.assertTrue(any("测速耗时" in text for text in logged_lines))
+            self.assertTrue(any("最快线路" in text for text in logged_lines))
+            self.assertTrue(any(f"选择上传线路: {result['upcdn']}" in text for text in logged_lines))
+
+    def test_choose_line_timeout_skips_line(self):
+        mock_client = Mock()
+
+        async def _request_side_effect(method, url, **kwargs):
+            if "bda2" in url:
+                raise asyncio.TimeoutError()
+            return _FakeResponse(200)
+
+        mock_client.request = AsyncMock(side_effect=_request_side_effect)
+
+        with patch(
+            "modules.bili_sdk.video_uploader.get_client", return_value=mock_client
+        ), patch("modules.bili_sdk.video_uploader.logger") as mock_logger:
+            result = asyncio.run(_choose_line(None))
+            self.assertIsNotNone(result)
+            self.assertNotEqual(result["upcdn"], "bda2")
+            warn_logs = [call.args[0] for call in mock_logger.warning.call_args_list if call.args]
+            self.assertTrue(any("未响应，跳过该线路" in text for text in warn_logs))
+
+    def test_choose_line_abnormal_status_code_skips_line(self):
+        mock_client = Mock()
+
+        async def _request_side_effect(method, url, **kwargs):
+            if "bda2" in url:
+                return _FakeResponse(502)
+            return _FakeResponse(200)
+
+        mock_client.request = AsyncMock(side_effect=_request_side_effect)
+
+        with patch(
+            "modules.bili_sdk.video_uploader.get_client", return_value=mock_client
+        ), patch("modules.bili_sdk.video_uploader.logger") as mock_logger:
+            result = asyncio.run(_choose_line(None))
+            self.assertIsNotNone(result)
+            self.assertNotEqual(result["upcdn"], "bda2")
+            warn_logs = [call.args[0] for call in mock_logger.warning.call_args_list if call.args]
+            self.assertTrue(any("测速返回异常状态码 502" in text for text in warn_logs))
+
+    def test_choose_line_dynamic_probe_with_get(self):
+        mock_client = Mock()
+        dynamic_payload = {
+            "OK": 1,
+            "lines": [
+                {
+                    "os": "upos",
+                    "probe_url": "//upos-cs-dyn1.bilivideo.com/OK",
+                    "query": "probe_version=20230101&upcdn=dyn1",
+                    "upcdn": "dyn1",
+                }
+            ],
+            "probe": {"get": 1},
+        }
+
+        async def _request_side_effect(method, url, **kwargs):
+            if "r=probe" in url:
+                return _FakeResponse(200, json_data=dynamic_payload)
+            if "dyn1" in url:
+                self.assertEqual(method, "GET")
+                return _FakeResponse(200)
+            return _FakeResponse(404)
+
+        mock_client.request = AsyncMock(side_effect=_request_side_effect)
+
+        with patch(
+            "modules.bili_sdk.video_uploader.get_client", return_value=mock_client
+        ), patch("modules.bili_sdk.video_uploader.logger") as mock_logger:
+            result = asyncio.run(_choose_line(None))
+            self.assertEqual(result["upcdn"], "dyn1")
+            self.assertEqual(result["probe_version"], 20230101)
+
+    def test_choose_line_all_failed_uses_fallback(self):
+        mock_client = Mock()
+        mock_client.request = AsyncMock(return_value=_FakeResponse(500))
+
+        with patch(
+            "modules.bili_sdk.video_uploader.get_client", return_value=mock_client
+        ), patch("modules.bili_sdk.video_uploader.logger") as mock_logger:
+            result = asyncio.run(_choose_line(None))
+            self.assertIsNotNone(result)
+            warn_logs = [call.args[0] for call in mock_logger.warning.call_args_list if call.args]
+            self.assertTrue(any("无可用线路，使用兜底线路" in text for text in warn_logs))
+
+    def test_choose_line_dynamic_probe_query_parsing(self):
+        mock_client = Mock()
+        # 模拟真实 B 站 preupload?r=probe 响应结构（不包含顶层 upcdn 字段，参数均在 query 字符串中）
+        real_bilibili_payload = {
+            "OK": 1,
+            "lines": [
+                {
+                    "os": "upos",
+                    "query": "probe_version=20250923&upcdn=tx&zone=cs",
+                    "probe_url": "//upos-cs-upcdntx.bilivideo.com/OK",
+                }
+            ],
+            "probe": {"post": 1},
+        }
+
+        async def _request_side_effect(method, url, **kwargs):
+            if "r=probe" in url:
+                return _FakeResponse(200, json_data=real_bilibili_payload)
+            if "upcdntx" in url:
+                return _FakeResponse(200)
+            return _FakeResponse(404)
+
+        mock_client.request = AsyncMock(side_effect=_request_side_effect)
+
+        with patch(
+            "modules.bili_sdk.video_uploader.get_client", return_value=mock_client
+        ):
+            result = asyncio.run(_choose_line(None))
+            self.assertEqual(result["upcdn"], "tx")
+            self.assertEqual(result["probe_version"], 20250923)
+            self.assertEqual(result["os"], "upos")
+
+    def test_video_uploader_start_dispatches_choose_line_event(self):
+        from modules.bili_sdk.video_uploader import VideoUploader, VideoUploaderEvents
+
+        uploader = VideoUploader(pages=[], meta={}, credential=Mock())
+        dispatched = []
+
+        @uploader.on(VideoUploaderEvents.CHOOSE_LINE.value)
+        def _on_choose_line(data):
+            dispatched.append(data)
+
+        with patch(
+            "modules.bili_sdk.video_uploader._choose_line",
+            new=AsyncMock(return_value={"upcdn": "bda2"}),
+        ), patch.object(uploader, "_main", new=AsyncMock(return_value={"bvid": "BV1test"})):
+            result = asyncio.run(uploader.start())
+            self.assertEqual(result["bvid"], "BV1test")
+            self.assertEqual(len(dispatched), 1)
+            self.assertEqual(dispatched[0]["line"]["upcdn"], "bda2")
+
+    def test_video_uploader_logger_level_is_info(self):
+        from modules.bili_sdk.video_uploader import logger
+        self.assertTrue(logger.isEnabledFor(logging.INFO))
 
 
 if __name__ == "__main__":

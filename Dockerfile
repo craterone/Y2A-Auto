@@ -100,7 +100,28 @@ RUN set -eux \
     && chmod +x /ffmpeg-out/ffmpeg /ffmpeg-out/ffprobe
 
 # ============================================================
-# 第三阶段：运行阶段
+# 第三阶段：Web 前端构建 (React SPA)
+# ============================================================
+FROM node:20-slim AS web-builder
+
+# 接收版本号参数，注入前端构建
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=${APP_VERSION}
+
+WORKDIR /app/web
+
+# 单独复制前端依赖定义以充分利用 Docker 缓存层
+COPY web/package.json web/package-lock.json ./
+
+# 安装依赖
+RUN npm ci
+
+# 复制前端源码并执行编译
+COPY web/ ./
+RUN npm run build
+
+# ============================================================
+# 第四阶段：运行阶段
 # ============================================================
 FROM python:3.11-slim
 
@@ -183,6 +204,9 @@ COPY --from=ffmpeg-builder /ffmpeg-out/ffprobe /app/ffmpeg/bin/ffprobe
 
 # 复制应用代码
 COPY --chown=y2a:y2a . .
+
+# 从 web-builder 复制编译好的前端产物（确保是最新的构建）
+COPY --from=web-builder --chown=y2a:y2a /app/web/dist /app/web/dist
 
 # 创建必要的目录和符号链接，设置权限
 RUN mkdir -p /app/config /app/db /app/downloads /app/logs /app/cookies /app/temp \

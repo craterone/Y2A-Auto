@@ -26,14 +26,17 @@ class BilibiliRuntimeTests(unittest.TestCase):
 
         runtime = importlib.reload(runtime)
         calls = []
-        fake_settings = types.SimpleNamespace(set=lambda key, value: calls.append((key, value)))
+        fake_settings = types.SimpleNamespace(
+            set=lambda key, value: calls.append((key, value)),
+            set_verify_ssl=lambda value: calls.append(("verify_ssl", value)),
+        )
         fake_bili_sdk = types.SimpleNamespace(request_settings=fake_settings)
 
         with mock.patch.dict(sys.modules, {"modules.bili_sdk": fake_bili_sdk}):
             self.assertTrue(runtime.configure_bilibili_runtime())
             self.assertTrue(runtime.configure_bilibili_runtime())
 
-        self.assertEqual(calls, [("impersonate", "chrome131")])
+        self.assertEqual(calls, [("impersonate", None), ("timeout", 240), ("verify_ssl", False)])
         self.assertIsNone(runtime.get_bilibili_runtime_error())
 
     def test_zone_wrapper_returns_sdk_data(self):

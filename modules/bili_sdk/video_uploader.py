@@ -10,6 +10,8 @@ import time
 import base64
 import re
 import asyncio
+import logging
+from urllib.parse import parse_qs
 from enum import Enum
 from typing import List, Union, Optional
 from copy import copy, deepcopy
@@ -27,6 +29,8 @@ from .exceptions.NetworkException import NetworkException
 from .exceptions.ResponseCodeException import ResponseCodeException
 
 _API = get_api("video_uploader")
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 async def upload_cover(cover: Picture, credential: Credential) -> str:
@@ -71,45 +75,182 @@ with open(
     LINES_INFO = json.loads(f.read())
 
 
+PROBE_LIST_TIMEOUT = 10.0
+PROBE_LINE_TIMEOUT = 15.0
+DEFAULT_PROBE_POST_MB = 0.1
+
+
+def _normalize_probe_url(probe_url: str) -> str:
+    """
+    标准化测速 URL，确保包含协议头
+    """
+    if probe_url.startswith("http://") or probe_url.startswith("https://"):
+        return probe_url
+    if probe_url.startswith("//"):
+        return f"https:{probe_url}"
+    return f"https://{probe_url}"
+
+
+def _format_line_item(item: dict) -> dict:
+    """
+    规范化线路数据字段，保证包含 os、upcdn 和 probe_version 等必要字段
+    """
+    formatted = dict(item)
+    query = formatted.get("query", "")
+    query_params = {}
+    if query:
+        try:
+            parsed = parse_qs(query)
+            query_params = {k: v[0] for k, v in parsed.items() if v}
+        except Exception:
+            pass
+
+    if "upcdn" not in formatted or not formatted["upcdn"]:
+        upcdn_val = query_params.get("upcdn")
+        if not upcdn_val:
+            probe_url = formatted.get("probe_url", "")
+            match = re.search(r"upcdn([a-zA-Z0-9_-]+)", probe_url)
+            if match:
+                upcdn_val = match.group(1)
+        formatted["upcdn"] = upcdn_val or "bda2"
+
+    if "os" not in formatted or not formatted["os"]:
+        formatted["os"] = query_params.get("os") or "upos"
+
+    if "probe_version" not in formatted or not formatted["probe_version"]:
+        pv_val = query_params.get("probe_version")
+        if pv_val and str(pv_val).isdigit():
+            formatted["probe_version"] = int(pv_val)
+        else:
+            upcdn = formatted.get("upcdn", "")
+            formatted["probe_version"] = LINES_INFO.get(upcdn, {}).get("probe_version", 20221109)
+
+    if "zone" not in formatted and "zone" in query_params:
+        formatted["zone"] = query_params["zone"]
+
+    return formatted
+
+
+async def _fetch_probe_info() -> tuple[list[dict], dict]:
+    """
+    尝试拉取 B 站动态测速线路列表与探测配置。
+    若失败则返回空列表与空字典，调用方将降级使用本地静态 LINES_INFO。
+    """
+    client = get_client()
+    probe_url = "https://member.bilibili.com/preupload?r=probe"
+    try:
+        resp = await asyncio.wait_for(
+            client.request(method="GET", url=probe_url),
+            timeout=PROBE_LIST_TIMEOUT,
+        )
+        if 200 <= resp.code < 300:
+            json_fn = getattr(resp, "json", None)
+            data = json_fn() if callable(json_fn) else None
+            if isinstance(data, dict) and data.get("OK") == 1 and isinstance(data.get("lines"), list):
+                probe_cfg = data.get("probe") if isinstance(data.get("probe"), dict) else {}
+                return data["lines"], probe_cfg
+    except Exception as e:
+        logger.debug(f"[VideoUploader] 动态获取线路列表失败，将使用本地预置线路: {e}")
+    return [], {}
+
+
 async def _probe() -> dict:
     """
-    测试所有线路
+    测试所有线路并选出最快线路。
 
     测速网页 https://member.bilibili.com/preupload?r=ping
+    参考 biliup line.rs#L152 优化单线路硬超时、状态码校验及精细化日志。
     """
-    # api = _API["probe"]
-    # info = await Api(**api).update_params(r="probe").result # 不实时获取线路直接用 LINES_INFO
-    min_cost, fastest_line = 30, None
-    legacy_timeout = request_settings.get_timeout()
-    request_settings.set_timeout(30) # 测试时设置为 30
-    for line in LINES_INFO.values():
+    logger.info("[VideoUploader] 开始测试所有线路速度...")
+
+    dynamic_lines, probe_cfg = await _fetch_probe_info()
+    if dynamic_lines:
+        candidate_lines = [_format_line_item(item) for item in dynamic_lines if isinstance(item, dict)]
+    else:
+        candidate_lines = [dict(v) for v in LINES_INFO.values()]
+
+    is_get = probe_cfg.get("get") is not None
+    if is_get:
+        method = "GET"
+        body_data = None
+    else:
+        method = "POST"
+        post_mb = probe_cfg.get("post")
+        if not isinstance(post_mb, (int, float)) or post_mb <= 0:
+            post_mb = DEFAULT_PROBE_POST_MB
+        body_data = bytes(int(post_mb * 1024 * 1024))
+
+    min_cost = float("inf")
+    fastest_line = None
+    client = get_client()
+
+    for line in candidate_lines:
+        line_name = line.get("upcdn") or line.get("name") or "unknown"
+        probe_raw_url = line.get("probe_url")
+        if not probe_raw_url:
+            continue
+        url = _normalize_probe_url(probe_raw_url)
         start = time.perf_counter()
-        data = bytes(int(1024 * 0.1 * 1024))  # post 0.1MB
-        client = get_client()
         try:
-            await client.request(
-                method="POST",
-                url=f'https:{line["probe_url"]}',
-                data=data,
+            resp = await asyncio.wait_for(
+                client.request(
+                    method=method,
+                    url=url,
+                    data=body_data,
+                ),
+                timeout=PROBE_LINE_TIMEOUT,
             )
             cost_time = time.perf_counter() - start
-        except Exception:
-            cost_time = request_settings.get_timeout()
-        if cost_time < min_cost:
-            min_cost, fastest_line = cost_time, line
-    request_settings.set_timeout(legacy_timeout)
-    return fastest_line
+            if 200 <= resp.code < 300:
+                logger.info(
+                    f"[VideoUploader] 线路 {line_name} ({line.get('upcdn')}) 测速耗时: {cost_time:.4f} 秒"
+                )
+                if cost_time < min_cost:
+                    min_cost, fastest_line = cost_time, line
+            else:
+                logger.warning(
+                    f"[VideoUploader] 线路 {line_name} ({line.get('upcdn')}) 测速返回异常状态码 {resp.code}，跳过该线路"
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[VideoUploader] 线路 {line_name} ({line.get('upcdn')}) 测速超过 {PROBE_LINE_TIMEOUT} 秒未响应，跳过该线路"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[VideoUploader] 线路 {line_name} ({line.get('upcdn')}) 测速失败: {e}"
+            )
+
+    if fastest_line is not None:
+        logger.info(
+            f"[VideoUploader] 线路测速完成，最快线路: {fastest_line.get('upcdn')} (耗时: {min_cost:.4f} 秒)"
+        )
+        return fastest_line
+
+    fallback_line = LINES_INFO.get("bda2") or next(iter(LINES_INFO.values()))
+    logger.warning(
+        f"[VideoUploader] 线路测速完成，无可用线路，使用兜底线路: {fallback_line.get('upcdn')}"
+    )
+    return fallback_line
 
 
-async def _choose_line(line: Lines) -> dict:
+async def _choose_line(line: Union[Lines, str, None]) -> dict:
     """
     选择线路，不存在则直接测速自动选择
     """
     if isinstance(line, Lines):
         line_info = LINES_INFO.get(line.value)
         if line_info is not None:
+            logger.info(f"[VideoUploader] 选择上传线路: {line.value} (指定线路)")
             return line_info
-    return await _probe()
+    elif isinstance(line, str) and line in LINES_INFO:
+        line_info = LINES_INFO[line]
+        logger.info(f"[VideoUploader] 选择上传线路: {line} (指定线路)")
+        return line_info
+
+    chosen_line = await _probe()
+    chosen_name = chosen_line.get("upcdn") if isinstance(chosen_line, dict) else chosen_line
+    logger.info(f"[VideoUploader] 选择上传线路: {chosen_name}")
+    return chosen_line
 
 
 class VideoUploaderPage:
@@ -182,6 +323,7 @@ class VideoUploaderEvents(Enum):
     + FAILED  上传失败
     """
 
+    CHOOSE_LINE = "CHOOSE_LINE"
     PREUPLOAD = "PREUPLOAD"
     PREUPLOAD_FAILED = "PREUPLOAD_FAILED"
     PRE_PAGE = "PRE_PAGE"
@@ -754,7 +896,11 @@ class VideoUploader(AsyncEvent):
         self.cover = (
             self.meta.cover
             if isinstance(self.meta, VideoMeta)
-            else cover if isinstance(cover, Picture) else Picture().from_file(cover)
+            else cover
+            if isinstance(cover, Picture)
+            else Picture().from_file(cover)
+            if cover
+            else None
         )
         self.line = line
         self.__task: Union[Task, None] = None
@@ -779,12 +925,12 @@ class VideoUploader(AsyncEvent):
                 "profile": "ugcfx/bup",
                 "name": os.path.basename(page.path),
                 "size": page.get_size(),
-                "r": self.line["os"],
+                "r": self.line.get("os", "upos") if isinstance(self.line, dict) else "upos",
                 "ssl": "0",
                 "version": "2.14.0",
                 "build": "2100400",
-                "upcdn": self.line["upcdn"],
-                "probe_version": self.line["probe_version"],
+                "upcdn": (self.line.get("upcdn") if isinstance(self.line, dict) else None) or "bda2",
+                "probe_version": (self.line.get("probe_version") if isinstance(self.line, dict) else None) or 20221109,
             },
             cookies=await self.credential.get_buvid_cookies(),
             headers={
@@ -985,6 +1131,7 @@ class VideoUploader(AsyncEvent):
         """
 
         self.line = await _choose_line(self.line)
+        self.dispatch(VideoUploaderEvents.CHOOSE_LINE.value, {"line": self.line})
         task = create_task(self._main())
         self.__task = task
 
@@ -1083,8 +1230,14 @@ class VideoUploader(AsyncEvent):
     @staticmethod
     def _switch_upload_endpoint(preupload: dict, line: dict = None) -> dict:
         # 替换线路 endpoint
-        if line is not None and re.match(
-            r"//upos-(sz|cs)-upcdn(bda2|ws|qn)\.bilivideo\.com", preupload["endpoint"]
+        if (
+            line is not None
+            and isinstance(line, dict)
+            and line.get("upcdn")
+            and preupload.get("endpoint")
+            and re.match(
+                r"//upos-(sz|cs)-upcdn(bda2|ws|qn)\.bilivideo\.com", preupload["endpoint"]
+            )
         ):
             preupload["endpoint"] = re.sub(
                 r"upcdn(bda2|qn|ws)", f'upcdn{line["upcdn"]}', preupload["endpoint"]

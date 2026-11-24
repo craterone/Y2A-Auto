@@ -18,7 +18,7 @@ from .bilibili_auth import load_credential_from_file, validate_credential_remote
 from .utils import get_app_subdir
 
 BILIBILI_TITLE_LIMIT = 80
-BILIBILI_DESCRIPTION_LIMIT = 2000
+BILIBILI_DESCRIPTION_LIMIT = 1000
 
 
 def setup_task_logger(task_id):
@@ -334,6 +334,12 @@ class BilibiliUploader:
                 err = data.get("err") if isinstance(data, dict) else data
                 return _compact_exception_text(str(err)) or "未知错误"
 
+            @uploader.on(video_uploader.VideoUploaderEvents.CHOOSE_LINE.value)
+            def on_choose_line(data):
+                line_data = data.get("line") if isinstance(data, dict) else data
+                line_name = line_data.get("upcdn") if isinstance(line_data, dict) else line_data
+                self.log(f"Bilibili 选择上传线路: {line_name}")
+
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_CHUNK.value)
             def on_after_chunk(data):
                 try:
@@ -394,10 +400,16 @@ class BilibiliUploader:
             def on_cover_failed(data):
                 self.log(f"Bilibili封面上传失败：{_event_error(data)}")
 
+            captured_cid = [None]
+
             @uploader.on(video_uploader.VideoUploaderEvents.PRE_SUBMIT.value)
-            def on_pre_submit(_data):
+            def on_pre_submit(data):
                 _emit_progress("99.0%")
                 self.log("视频和封面上传完成，正在提交Bilibili投稿")
+                if isinstance(data, dict):
+                    v_list = data.get("videos") or []
+                    if v_list and isinstance(v_list[0], dict) and v_list[0].get("cid"):
+                        captured_cid[0] = v_list[0]["cid"]
 
             @uploader.on(video_uploader.VideoUploaderEvents.AFTER_SUBMIT.value)
             def on_after_submit(_data):
@@ -417,13 +429,26 @@ class BilibiliUploader:
 
             _emit_progress("0.0%")
             self.log("开始上传到bilibili")
+            if not self.task_id or safe_desc != (description or ""):
+                self.log(f"bilibili 投稿 description (字数: {len(safe_desc)}):\n{safe_desc}")
+            task_handler = None
+            if self.logger and isinstance(getattr(self.logger, "handlers", None), list):
+                for h in self.logger.handlers:
+                    if isinstance(h, logging.Handler):
+                        task_handler = h
+                        video_uploader.logger.addHandler(task_handler)
+                        break
             try:
-                result = asyncio.run(uploader.start())
-            except RuntimeError:
-                # 已有事件循环时，在新线程中运行
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    result = pool.submit(asyncio.run, uploader.start()).result()
+                try:
+                    result = asyncio.run(uploader.start())
+                except RuntimeError:
+                    # 已有事件循环时，在新线程中运行
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        result = pool.submit(asyncio.run, uploader.start()).result()
+            finally:
+                if task_handler:
+                    video_uploader.logger.removeHandler(task_handler)
 
             _emit_progress("100.0%")
             self.log(f"bilibili上传完成: {result}")
@@ -445,6 +470,7 @@ class BilibiliUploader:
             return True, {
                 "bvid": bvid,
                 "aid": aid,
+                "cid": captured_cid[0],
                 "url": video_url,
             }
 

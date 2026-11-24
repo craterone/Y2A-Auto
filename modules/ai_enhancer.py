@@ -484,7 +484,12 @@ def _build_fallback_text(
     )
 
 
-def _build_metadata_translation_system_prompt(target_language: str, retry: bool = False, openai_config=None) -> str:
+def _build_metadata_translation_system_prompt(
+    target_language: str,
+    retry: bool = False,
+    openai_config=None,
+    include_description: bool = False,
+) -> str:
     """构建元数据翻译 system prompt（委托给统一 Prompt 中心）。"""
     from .prompt_manager import get_metadata_translate_prompt, read_prompt_config_from_app_config
     mode = 'builtin'
@@ -499,6 +504,7 @@ def _build_metadata_translation_system_prompt(target_language: str, retry: bool 
         user_text=user_text,
         target_language=target_language,
         retry=retry,
+        include_description=include_description,
     )
 
 
@@ -770,6 +776,38 @@ def _should_retry_metadata_translation_attempt(failed_fields: Mapping[str, Seque
     return False
 
 
+def _is_hard_failure_reason(reason: str) -> bool:
+    """判断单个失败原因是否属于不可恢复的硬性错误（异常/配置缺失等）。
+
+    这类错误即使进入人工审核也无法产生有效译文，应直接标记任务为失败。
+    """
+    normalized = safe_str(reason).strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith("exception:"):
+        return True
+    if normalized in {"missing_openai_config", "no_meaningful_content_after_preclean"}:
+        return True
+    return False
+
+
+def is_hard_failure_metadata_translation(failed_fields: Mapping[str, Sequence[str]]) -> bool:
+    """判断元数据翻译的所有失败字段是否都属于硬性错误。
+
+    当所有失败原因均为异常或不可恢复错误时返回 True，
+    此时任务应标记为 FAILED 而非 AWAITING_REVIEW。
+    """
+    if not failed_fields:
+        return False
+    for reasons in failed_fields.values():
+        if not reasons:
+            return False
+        for reason in reasons:
+            if not _is_hard_failure_reason(reason):
+                return False
+    return True
+
+
 def _humanize_metadata_failure_reason(reason: str) -> str:
     normalized = safe_str(reason).strip()
     lowered = normalized.lower()
@@ -932,10 +970,16 @@ def _translate_video_metadata_once(
         "description": cleaned_description if "description" in requestable_fields else "",
     }
 
+    has_description = "description" in requestable_fields
     translated_fields = _request_translated_metadata_fields(
         client=client,
         model_name=model_name,
-        system_prompt=_build_metadata_translation_system_prompt(target_language, retry=False, openai_config=openai_config),
+        system_prompt=_build_metadata_translation_system_prompt(
+            target_language,
+            retry=False,
+            openai_config=openai_config,
+            include_description=has_description,
+        ),
         payload=payload,
         max_tokens=_estimate_metadata_max_tokens(requestable_fields),
         thinking_enabled=thinking_enabled,
@@ -966,7 +1010,12 @@ def _translate_video_metadata_once(
             retry_fields = _request_translated_metadata_fields(
                 client=client,
                 model_name=model_name,
-                system_prompt=_build_metadata_translation_system_prompt(target_language, retry=True, openai_config=openai_config),
+                system_prompt=_build_metadata_translation_system_prompt(
+                    target_language,
+                    retry=True,
+                    openai_config=openai_config,
+                    include_description=False,
+                ),
                 payload=retry_payload,
                 max_tokens=_estimate_metadata_max_tokens(["title"]),
                 thinking_enabled=thinking_enabled,
@@ -979,7 +1028,12 @@ def _translate_video_metadata_once(
             translated_fields["title"] = retry_fields["title"]
 
         if "description" in invalid_fields:
-            description_retry_prompt = _build_metadata_translation_system_prompt(target_language, retry=True, openai_config=openai_config)
+            description_retry_prompt = _build_metadata_translation_system_prompt(
+                target_language,
+                retry=True,
+                openai_config=openai_config,
+                include_description=True,
+            )
             description_retry_scene = "ai_enhancer_metadata_translate_retry"
             if _should_use_description_only_retry(invalid_fields["description"]):
                 logger.info(
@@ -1044,11 +1098,14 @@ def translate_video_metadata(
     """翻译视频标题和简介，返回带状态与诊断信息的结构化结果。"""
     logger = setup_task_logger(task_id or "unknown")
     raw_title = safe_str(title)
-    raw_description = safe_str(description)
+    raw_description = safe_str(description) if translate_description else ''
 
     logger.info(f"开始翻译视频元数据，目标语言: {target_language}")
     logger.info(f"原标题 (截取前100字符): {raw_title[:100]}...")
-    logger.info(f"原简介长度: {len(raw_description)} 字符")
+    if translate_description:
+        logger.info(f"原简介长度: {len(raw_description)} 字符")
+    else:
+        logger.info("未开启简介翻译，仅翻译标题（移除描述）")
 
     cleaned_title = _pre_clean(raw_title, content_type="title") if translate_title and raw_title else ''
     cleaned_description = (
@@ -1173,7 +1230,8 @@ def translate_video_metadata(
         elapsed = time.time() - start_time
         logger.info(f"元数据翻译完成，耗时: {elapsed:.2f}秒")
         logger.info(f"翻译标题: {final_result['title'][:100]}...")
-        logger.info(f"翻译简介长度: {len(final_result['description'])} 字符")
+        if translate_description:
+            logger.info(f"翻译简介长度: {len(final_result['description'])} 字符")
         if final_result["failed_fields"]:
             logger.warning(f"元数据翻译最终失败字段: {final_result['failed_fields']}")
         return final_result

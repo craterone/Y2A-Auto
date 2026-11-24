@@ -252,6 +252,7 @@ _TASK_CANCEL_LOCK = threading.Lock()
 _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
 _TASK_SCHEDULING_LOCK = threading.RLock()
+_PENDING_DISPATCH_MUTEX = threading.Lock()
 
 
 def get_task_cancel_event(task_id):
@@ -503,6 +504,89 @@ def resolve_youtube_cookies_path(config, logger_obj=None):
     return None
 
 
+def is_cookie_required_error(error_text: Any) -> bool:
+    """判断错误信息是否表明需要 YouTube Cookie / 登录态 / 授权。"""
+    if not error_text:
+        return False
+    if isinstance(error_text, dict):
+        return False
+
+    text = str(error_text).lower()
+
+    indicators = (
+        "sign in to confirm",
+        "confirm you're not a bot",
+        "confirm you’re not a bot",
+        "not a bot",
+        "sign in to view",
+        "please sign in",
+        "sign in if you've been granted access",
+        "sign in to access",
+        "sign in to confirm your age",
+        "this video is only available to registered users",
+        "this video is private",
+        "private video",
+        "join this channel to get access",
+        "members-only",
+        "members only",
+        "age-restricted",
+        "age restricted",
+        "login required",
+        "log in",
+        "use --cookies",
+        "--cookies-from-browser",
+        "cookies are required",
+        "cookies-from-browser",
+        "cookie",
+        "cookies",
+        "http error 403",
+        "403: forbidden",
+        "signature extraction failed",
+        "the page needs to be reloaded",
+        "captcha",
+        "需要登录",
+        "需要 cookie",
+        "需要cookie",
+        "人机身份验证",
+        "人机验证",
+        "私享视频",
+        "会员专享",
+        "年龄限制",
+    )
+    if any(indicator in text for indicator in indicators):
+        return True
+
+    try:
+        from modules.youtube_handler import _looks_like_youtube_bot_challenge
+        if _looks_like_youtube_bot_challenge(str(error_text)):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def is_members_only_error(error_text: Any) -> bool:
+    """判断错误信息是否表明属于 YouTube 会员专属视频 (members-only)。"""
+    try:
+        from modules.youtube_handler import is_members_only_error as _is_members_only_error
+        return _is_members_only_error(error_text)
+    except Exception:
+        if not error_text or isinstance(error_text, dict):
+            return False
+        text = str(error_text).lower()
+        return any(ind in text for ind in (
+            "members-only",
+            "members only",
+            "join this channel to get access",
+            "this video is available to this channel's members",
+            "members on level",
+            "仅限会员",
+            "会员专享",
+            "会员专属",
+        ))
+
+
 def _get_task_upload_target(task, fallback=UPLOAD_TARGET_ACFUN):
     if not task:
         return normalize_upload_target(fallback)
@@ -536,6 +620,9 @@ def _build_task_notification_payload(task, overrides=None) -> dict:
     merged_task = dict(task or {})
     if overrides:
         merged_task.update(overrides)
+    ac_resp = str(merged_task.get('acfun_upload_response') or '')
+    bili_resp = str(merged_task.get('bilibili_upload_response') or '')
+    is_members_only = ac_resp == 'members-only' or bili_resp == 'members-only'
     return {
         'task_id': str(merged_task.get('id') or '').strip(),
         'youtube_url': str(merged_task.get('youtube_url') or '').strip(),
@@ -546,8 +633,9 @@ def _build_task_notification_payload(task, overrides=None) -> dict:
         'error_message': str(merged_task.get('error_message') or '').strip(),
         'asr_warning_message': str(merged_task.get('asr_warning_message') or '').strip(),
         'subtitle_warning_message': str(merged_task.get('subtitle_warning_message') or '').strip(),
-        'acfun_uploaded': bool(merged_task.get('acfun_upload_response')),
-        'bilibili_uploaded': bool(merged_task.get('bilibili_upload_response')),
+        'acfun_uploaded': bool(merged_task.get('acfun_upload_response')) and not is_members_only,
+        'bilibili_uploaded': bool(merged_task.get('bilibili_upload_response')) and not is_members_only,
+        'members_only': is_members_only,
     }
 
 
@@ -572,7 +660,7 @@ def _get_effective_metadata_limits(upload_target):
     if target == UPLOAD_TARGET_BILIBILI:
         return {
             'title_limit': 80,
-            'description_limit': 2000,
+            'description_limit': 1000,
         }
     return {
         'title_limit': 50,
@@ -682,16 +770,50 @@ def _normalize_task_text(value) -> str:
     return str(value or '').strip()
 
 
+def _should_translate_title_for_task(task, config=None, task_logger=None) -> bool:
+    """
+    判断指定任务是否需要执行标题自动翻译
+    优先级：
+    1. 任务自身显式指定的 translate_title 字段
+    2. 所属 Playlist 监控配置的 translate_title
+    3. 全局配置 TRANSLATE_TITLE
+    """
+    if task and task.get('translate_title') is not None:
+        res = bool(task['translate_title'])
+        if task_logger:
+            task_logger.info(f"标题翻译开关判定: 任务字段 translate_title={task.get('translate_title')} (结果: {'启动' if res else '不启动'})")
+        return res
+    if task and task.get('playlist_monitor_id'):
+        try:
+            from modules.playlist_monitor import playlist_monitor_manager
+            mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+            if mon and mon.get('translate_title') is not None:
+                res = bool(mon['translate_title'])
+                if task_logger:
+                    task_logger.info(f"标题翻译开关判定: Playlist监控(ID: {task['playlist_monitor_id']}) translate_title={mon.get('translate_title')} (结果: {'启动' if res else '不启动'})")
+                return res
+        except Exception:
+            pass
+    if config:
+        res = _as_bool(config.get('TRANSLATE_TITLE', False))
+        if task_logger:
+            task_logger.info(f"标题翻译开关判定: 全局配置 TRANSLATE_TITLE={config.get('TRANSLATE_TITLE')} (结果: {'启动' if res else '不启动'})")
+        return res
+    if task_logger:
+        task_logger.info("标题翻译开关判定: 无匹配配置，默认不启动")
+    return False
+
+
 def _get_missing_required_translation_fields(task, config) -> list:
     if not task:
         return []
 
     missing_fields = []
-    if _as_bool(config.get('TRANSLATE_TITLE', True)) and _normalize_task_text(task.get('video_title_original')):
+    if _should_translate_title_for_task(task, config) and _normalize_task_text(task.get('video_title_original')):
         if not _normalize_task_text(task.get('video_title_translated')):
             missing_fields.append('title')
 
-    if _as_bool(config.get('TRANSLATE_DESCRIPTION', True)) and _normalize_task_text(task.get('description_original')):
+    if _as_bool(config.get('TRANSLATE_DESCRIPTION', False)) and _normalize_task_text(task.get('description_original')):
         if not _normalize_task_text(task.get('description_translated')):
             missing_fields.append('description')
 
@@ -1047,7 +1169,11 @@ def init_db():
         acfun_upload_response TEXT,
         bilibili_upload_response TEXT,
         asr_warning_message TEXT,  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
-        subtitle_warning_message TEXT  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        subtitle_warning_message TEXT,  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        bilibili_season_id INTEGER,  -- Bilibili 合集 ID
+        bilibili_section_id INTEGER,  -- Bilibili 合集小节 ID
+        bilibili_season_title TEXT,  -- Bilibili 合集标题
+        translate_title BOOLEAN DEFAULT 0  -- 是否自动翻译标题
     )
     ''')
     
@@ -1310,6 +1436,57 @@ def init_db():
         # 兼容历史任务：空 upload_target 默认回填 acfun
         cursor.execute("UPDATE tasks SET upload_target = 'acfun' WHERE upload_target IS NULL OR TRIM(upload_target) = ''")
         conn.commit()
+
+        # 增加 playlist 监控相关字段
+        if 'playlist_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN playlist_id TEXT")
+            logger.info("数据库升级：添加playlist_id字段")
+            conn.commit()
+
+        if 'playlist_monitor_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN playlist_monitor_id INTEGER")
+            logger.info("数据库升级：添加playlist_monitor_id字段")
+            conn.commit()
+
+        if 'video_published_at' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN video_published_at TEXT")
+            logger.info("数据库升级：添加video_published_at字段")
+            conn.commit()
+
+        if 'custom_description' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN custom_description TEXT")
+            logger.info("数据库升级：添加custom_description字段")
+            conn.commit()
+
+        if 'auto_upload' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN auto_upload BOOLEAN DEFAULT 1")
+            logger.info("数据库升级：添加auto_upload字段")
+            conn.commit()
+
+        if 'bilibili_season_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_season_id INTEGER")
+            logger.info("数据库升级：添加bilibili_season_id字段")
+            conn.commit()
+
+        if 'bilibili_section_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_section_id INTEGER")
+            logger.info("数据库升级：添加bilibili_section_id字段")
+            conn.commit()
+
+        if 'bilibili_season_title' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN bilibili_season_title TEXT")
+            logger.info("数据库升级：添加bilibili_season_title字段")
+            conn.commit()
+
+        if 'translate_title' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN translate_title BOOLEAN DEFAULT 0")
+            logger.info("数据库升级：添加translate_title字段")
+            conn.commit()
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_id ON tasks(playlist_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_playlist_monitor_id ON tasks(playlist_monitor_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_video_published_at ON tasks(video_published_at)")
+        conn.commit()
     except Exception as e:
         logger.warning(f"数据库升级检查失败（可能已是最新版本）: {e}")
     
@@ -1333,62 +1510,125 @@ def get_db_connection():
         logger.debug(f"设置SQLite连接参数失败，将使用默认参数: {e}")
     return conn
 
-def add_task(youtube_url, upload_target=None):
+_pending_check_trigger_timer = None
+_pending_check_trigger_lock = threading.Lock()
+
+def trigger_check_pending_tasks_debounced(delay_seconds=0.5):
+    """
+    防抖触发全局任务处理器的 pending 任务检查，
+    避免短时间内大量 add_task 产生并发线程同时触发调度。
+    """
+    global _pending_check_trigger_timer
+    with _pending_check_trigger_lock:
+        if _pending_check_trigger_timer is not None and _pending_check_trigger_timer.is_alive():
+            return  # 已有计时器在等待，无需重复开启新线程
+        
+        def _runner():
+            time.sleep(delay_seconds)
+            try:
+                from modules.config_manager import load_config
+                cfg = load_config()
+                processor = get_global_task_processor(cfg)
+                if processor:
+                    processor._check_and_start_next_pending_task()
+            except Exception as e:
+                logger.warning(f"防抖触发检查pending任务失败: {e}")
+
+        _pending_check_trigger_timer = threading.Thread(target=_runner, daemon=True)
+        _pending_check_trigger_timer.start()
+
+def add_task(youtube_url, upload_target=None, playlist_id=None, playlist_monitor_id=None, video_published_at=None, custom_description=None, auto_upload=True, bilibili_season_id=None, bilibili_section_id=None, bilibili_season_title=None, translate_title=False, custom_tags=None):
     """
     添加新任务到数据库
     
     Args:
         youtube_url: YouTube视频URL
         upload_target: 投稿平台(acfun|bilibili|both)，为空则使用配置默认值
+        playlist_id: 可选，关联的YouTube播放列表ID
+        playlist_monitor_id: 可选，关联的播放列表监控配置ID
+        video_published_at: 可选，YouTube视频本身的发布时间 (ISO 8601 或字符串)
+        custom_description: 可选，所属 Playlist 统一配置的投稿简介
+        auto_upload: 可选，是否自动投稿，默认 True
+        bilibili_season_id: 可选，B站合集 ID
+        bilibili_section_id: 可选，B站合集小节 ID
+        bilibili_season_title: 可选，B站合集标题
+        translate_title: 可选，是否自动翻译标题，默认 False
+        custom_tags: 可选，所属 Playlist 统一配置的预设标签（列表或JSON）
         
     Returns:
         task_id: 新创建的任务ID
     """
     task_id = str(uuid.uuid4())
     normalized_target = normalize_upload_target(upload_target)
-    conn = get_db_connection()
     
-    try:
-        if not upload_target:
-            try:
-                from modules.config_manager import load_config
-                cfg = load_config()
-                normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
-            except Exception:
-                normalized_target = UPLOAD_TARGET_ACFUN
-        conn.execute(
-            'INSERT INTO tasks (id, youtube_url, upload_target, status) VALUES (?, ?, ?, ?)',
-            (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'])
-        )
-        conn.commit()
-        logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}")
-        
-        # 新任务添加后，触发全局任务处理器检查是否需要启动任务
+    if not upload_target:
         try:
             from modules.config_manager import load_config
-            config = load_config()
-            processor = get_global_task_processor(config)
-            if processor:
-                # 延迟触发，确保数据库事务已提交
-                import threading
-                import time
-                
-                def delayed_trigger():
-                    time.sleep(0.5)  # 等待0.5秒确保事务提交
-                    processor._check_and_start_next_pending_task()
-                
-                threading.Thread(target=delayed_trigger, daemon=True).start()
-                logger.info(f"已触发检查pending任务: {task_id}")
+            cfg = load_config()
+            normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
+        except Exception:
+            normalized_target = UPLOAD_TARGET_ACFUN
+
+    # 如果有统一投稿简介，同时作为初始 translated 简介
+    initial_desc_trans = custom_description if (custom_description and str(custom_description).strip()) else None
+    au_val = 1 if auto_upload else 0
+    safe_season_id = int(bilibili_season_id) if bilibili_season_id else None
+    safe_section_id = int(bilibili_section_id) if bilibili_section_id else None
+    safe_season_title = str(bilibili_season_title).strip() if bilibili_season_title else None
+    tt_val = 1 if translate_title else 0
+
+    # 处理预设标签
+    tags_initial = None
+    if custom_tags:
+        norm_tags = _normalize_tags_list(custom_tags)
+        if norm_tags:
+            tags_initial = json.dumps(norm_tags, ensure_ascii=False)
+
+    inserted = False
+    for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
+        conn = get_db_connection()
+        try:
+            conn.execute(
+                '''INSERT INTO tasks (
+                    id, youtube_url, upload_target, status, playlist_id, playlist_monitor_id, 
+                    video_published_at, custom_description, auto_upload, description_translated,
+                    bilibili_season_id, bilibili_section_id, bilibili_season_title, translate_title,
+                    tags_generated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'], playlist_id, playlist_monitor_id, 
+                 video_published_at, custom_description, au_val, initial_desc_trans,
+                 safe_season_id, safe_section_id, safe_season_title, tt_val, tags_initial)
+            )
+            conn.commit()
+            inserted = True
+            logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}, Playlist: {playlist_id}")
+            break
+        except sqlite3.OperationalError as e:
+            is_locked = 'locked' in str(e).lower()
+            if is_locked and attempt < DB_WRITE_RETRY_TIMES:
+                logger.warning(f"添加任务遇到数据库锁，将在 {DB_WRITE_RETRY_SLEEP_SECONDS * attempt}s 后重试 (第 {attempt}/{DB_WRITE_RETRY_TIMES} 次)")
+                time.sleep(DB_WRITE_RETRY_SLEEP_SECONDS * attempt)
+                continue
+            logger.error(f"添加任务失败: {str(e)}")
+            break
         except Exception as e:
-            logger.warning(f"触发任务检查失败，但任务已成功添加: {str(e)}")
-            
-    except Exception as e:
-        logger.error(f"添加任务失败: {str(e)}")
-        task_id = None
-    finally:
-        conn.close()
+            logger.error(f"添加任务失败: {str(e)}")
+            break
+        finally:
+            conn.close()
+
+    if not inserted:
+        return None
+
+    # 新任务添加后，通过防抖机制触发全局任务处理器检查
+    trigger_check_pending_tasks_debounced(delay_seconds=0.5)
     if task_id:
-        publish_task_event('task_added', {'task_id': task_id})
+        publish_task_event('task_added', {
+            'task_id': task_id, 
+            'playlist_id': playlist_id, 
+            'playlist_monitor_id': playlist_monitor_id,
+            'video_published_at': video_published_at
+        })
         emit_notification_event(
             NotificationEvent(
                 event_type=EVENT_TASK_ADDED,
@@ -1396,6 +1636,9 @@ def add_task(youtube_url, upload_target=None):
                     'task_id': task_id,
                     'youtube_url': youtube_url,
                     'upload_target': normalized_target,
+                    'playlist_id': playlist_id,
+                    'playlist_monitor_id': playlist_monitor_id,
+                    'video_published_at': video_published_at,
                 },
             )
         )
@@ -1461,6 +1704,15 @@ def update_task(task_id, silent=False, **kwargs):
         'bilibili_upload_response': 'bilibili_upload_response = ?',
         'asr_warning_message': 'asr_warning_message = ?',
         'subtitle_warning_message': 'subtitle_warning_message = ?',
+        'playlist_id': 'playlist_id = ?',
+        'playlist_monitor_id': 'playlist_monitor_id = ?',
+        'video_published_at': 'video_published_at = ?',
+        'custom_description': 'custom_description = ?',
+        'auto_upload': 'auto_upload = ?',
+        'bilibili_season_id': 'bilibili_season_id = ?',
+        'bilibili_section_id': 'bilibili_section_id = ?',
+        'bilibili_season_title': 'bilibili_season_title = ?',
+        'translate_title': 'translate_title = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -1534,6 +1786,15 @@ def update_task(task_id, silent=False, **kwargs):
                             ),
                         )
                     )
+                    if filtered_kwargs.get('status') == TASK_STATES['COMPLETED']:
+                        p_mon_id = merged_task.get('playlist_monitor_id')
+                        p_id = merged_task.get('playlist_id')
+                        if p_mon_id or p_id:
+                            try:
+                                from modules.playlist_monitor import update_playlist_last_task_completed
+                                update_playlist_last_task_completed(p_mon_id, p_id)
+                            except Exception as ex:
+                                logger.debug(f"更新播放列表完成时间失败: {ex}")
                 if not silent:  # 只有非静默模式才记录到主日志
                     logger.info(f"任务 {task_id} 更新成功: {filtered_kwargs}")
                 return True
@@ -1673,6 +1934,43 @@ def get_tasks_by_status(status):
     except Exception as e:
         logger.error(f"获取{status}状态任务失败: {str(e)}")
         return []
+    finally:
+        conn.close()
+
+def has_failed_tasks_in_playlist(monitor_id=None, playlist_id=None, exclude_task_id=None):
+    """检查指定 Playlist 是否存在失败任务，用于阻塞后续任务防止连续失败。
+
+    Args:
+        monitor_id: 播放列表监控 ID
+        playlist_id: 播放列表 ID
+        exclude_task_id: 排除的任务 ID（通常为当前正要调度的任务自身）
+
+    Returns:
+        (has_failed, count): 是否有失败任务及失败数量
+    """
+    if not monitor_id and not playlist_id:
+        return False, 0
+    conn = get_db_connection()
+    try:
+        conditions = []
+        params = []
+        if monitor_id:
+            conditions.append('playlist_monitor_id = ?')
+            params.append(monitor_id)
+        if playlist_id:
+            conditions.append('playlist_id = ?')
+            params.append(playlist_id)
+        where_playlist = '(' + ' OR '.join(conditions) + ')'
+        sql = f"SELECT COUNT(*) FROM tasks WHERE status = 'failed' AND {where_playlist}"
+        if exclude_task_id:
+            sql += ' AND id != ?'
+            params.append(exclude_task_id)
+        cur = conn.execute(sql, params)
+        count = cur.fetchone()[0]
+        return count > 0, count
+    except Exception as e:
+        logger.debug(f"检查 Playlist 失败任务时出错: {e}")
+        return False, 0
     finally:
         conn.close()
 
@@ -1864,7 +2162,7 @@ def retry_failed_tasks(config=None):
             upload_progress=None
         )
 
-        if start_task(task_id, config):
+        if start_task(task_id, config, ignore_interval=True):
             scheduled += 1
         else:
             failed_ids.append(task_id)
@@ -1894,7 +2192,7 @@ def get_metadata_translation_retry_block_reason(task, config) -> str | None:
     """返回当前配置下不能重新翻译的原因；可重试时返回 None。"""
     config = config or {}
     can_translate_title = (
-        _as_bool(config.get('TRANSLATE_TITLE', True))
+        _should_translate_title_for_task(task, config)
         and bool(_normalize_task_text(task.get('video_title_original')))
     )
     can_translate_description = (
@@ -2291,12 +2589,13 @@ class TaskProcessor:
         finally:
             logger.info("任务处理器已关闭")
     
-    def schedule_task(self, task_id):
+    def schedule_task(self, task_id, ignore_interval=False):
         """
         调度任务处理
         
         Args:
             task_id: 任务ID
+            ignore_interval: 是否忽略播放列表防风控执行间隔（如用户手动点击立即开始时为True）
         
         Returns:
             job_id: 调度作业ID
@@ -2324,6 +2623,80 @@ class TaskProcessor:
                 if task['status'] not in [TASK_STATES['PENDING'], TASK_STATES['FAILED']]:
                     logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能调度")
                     return None
+
+                # 严格检查任务所属 Playlist 的最大并发限制
+                p_mon_id = task.get('playlist_monitor_id')
+                p_id = task.get('playlist_id')
+                if p_mon_id or p_id:
+                    try:
+                        from modules.playlist_monitor import get_playlist_max_concurrency
+                        p_max = get_playlist_max_concurrency(p_mon_id, p_id)
+                    except Exception:
+                        p_max = 1
+
+                    # 统计该 playlist 当前运行中与活动线程中的任务数（排除当前 task_id 本身）
+                    cur_p_running = 0
+                    current_active_ids = set(_get_active_task_ids())
+                    for act_id in current_active_ids:
+                        if act_id == task_id:
+                            continue
+                        act_task = get_task(act_id)
+                        if act_task:
+                            if p_mon_id and act_task.get('playlist_monitor_id') == p_mon_id:
+                                cur_p_running += 1
+                            elif p_id and act_task.get('playlist_id') == p_id:
+                                cur_p_running += 1
+
+                    # 检查数据库中状态非 pending/非 failed/非 completed/非 cancelled 的任务
+                    conn = get_db_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute('''
+                            SELECT id, playlist_monitor_id, playlist_id FROM tasks 
+                            WHERE status NOT IN ('pending', 'completed', 'failed', 'cancelled')
+                              AND id != ?
+                        ''', (task_id,))
+                        for row in cur.fetchall():
+                            r_id, r_mon_id, r_pid = row[0], row[1], row[2]
+                            if r_id in current_active_ids:
+                                continue
+                            if p_mon_id and r_mon_id == p_mon_id:
+                                cur_p_running += 1
+                            elif p_id and r_pid == p_id:
+                                cur_p_running += 1
+                    finally:
+                        conn.close()
+
+                    if cur_p_running >= p_max:
+                        logger.info(
+                            f"任务 {task_id[:8]} 所属 Playlist 当前运行数 {cur_p_running} 已达到配置最大并发 {p_max}，暂不调度启动"
+                        )
+                        return None
+
+                    # 检查该任务所属 Playlist 是否处于防风控任务执行间隔冷却中
+                    if not ignore_interval:
+                        try:
+                            from modules.playlist_monitor import get_playlist_interval_cooling_info
+                            is_cooling, rem_sec = get_playlist_interval_cooling_info(p_mon_id, p_id)
+                            if is_cooling:
+                                logger.info(
+                                    f"任务 {task_id[:8]} 所属 Playlist 处于防风控执行间隔冷却期，还需等待 {rem_sec} 秒 ({round(rem_sec / 60, 1)} 分钟)，暂不调度"
+                                )
+                                return None
+                        except Exception as e:
+                            logger.debug(f"检查播放列表冷却失败: {e}")
+
+                    # 检查同 Playlist 是否有失败任务，有则阻塞后续任务防止连续失败
+                    if not ignore_interval:
+                        p_has_failed, p_failed_count = has_failed_tasks_in_playlist(
+                            monitor_id=p_mon_id, playlist_id=p_id, exclude_task_id=task_id
+                        )
+                        if p_has_failed:
+                            logger.info(
+                                f"任务 {task_id[:8]} 所属 Playlist 存在 {p_failed_count} 个失败任务，"
+                                f"暂不调度后续任务以防止连续失败（请先处理失败任务后再继续）"
+                            )
+                            return None
 
                 global task_semaphore
                 if task_semaphore is None:
@@ -2500,13 +2873,38 @@ class TaskProcessor:
                 if task is None:
                     task_logger.error("重新获取任务对象为None，终止任务处理")
                     return
+                if task['status'] == TASK_STATES['COMPLETED']:
+                    task_logger.info("任务已标记为完成（例如 members-only 跳过），终止后续处理")
+                    return
                 if task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("采集视频信息失败，终止任务处理")
                     return
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_FETCH_INFO)
 
-            # 2. 翻译/标签/分区推荐（如有需要）
-            if self.config.get('TRANSLATE_TITLE', True) or self.config.get('TRANSLATE_DESCRIPTION', True):
+            # 2a. 应用 Playlist 配置的标题替换和统一简介（独立于翻译开关）
+            task = get_task(task_id)
+            if task and task.get('playlist_monitor_id'):
+                self._apply_playlist_overrides(task_id, task, task_logger)
+                task = get_task(task_id)
+            _raise_if_cancelled(task_id, task_logger)
+
+            # 2b. 翻译/标签/分区推荐（如有需要）
+            should_trans_title = _should_translate_title_for_task(task, self.config, task_logger)
+            should_trans_desc = _as_bool(self.config.get('TRANSLATE_DESCRIPTION', False))
+            has_orig_title = bool(task.get('video_title_original'))
+            has_trans_title = bool(task.get('video_title_translated'))
+            will_translate_title = bool(should_trans_title and has_orig_title and not has_trans_title)
+
+            if will_translate_title:
+                task_logger.info(f"标题翻译检查：【启动标题翻译】(原标题: '{task.get('video_title_original')}')")
+            elif not should_trans_title:
+                task_logger.info(f"标题翻译检查：【不启动标题翻译】(原因: 自动翻译标题未开启, translate_title={task.get('translate_title')})")
+            elif not has_orig_title:
+                task_logger.info("标题翻译检查：【不启动标题翻译】(原因: 缺少视频原始标题)")
+            elif has_trans_title:
+                task_logger.info(f"标题翻译检查：【不启动标题翻译】(原因: 已有译文或已命中正则替换: '{task.get('video_title_translated')}')")
+
+            if should_trans_title or should_trans_desc:
                 if PIPELINE_STAGE_TRANSLATE_CONTENT in completed_stages:
                     task_logger.info("跳过标题/描述翻译（checkpoint已完成）")
                 else:
@@ -2521,6 +2919,8 @@ class TaskProcessor:
                         task_logger.error("元数据翻译失败，终止任务处理")
                         return
                 _raise_if_cancelled(task_id, task_logger)
+            else:
+                task_logger.info("未进入元数据翻译流程（标题和简介自动翻译开关均未开启）")
 
             if self.config.get('GENERATE_TAGS', True):
                 if PIPELINE_STAGE_GENERATE_TAGS in completed_stages:
@@ -2571,6 +2971,9 @@ class TaskProcessor:
                 self._download_video_file(task_id, task['youtube_url'], task_logger)
                 _raise_if_cancelled(task_id, task_logger)
                 task = get_task(task_id)
+                if task is not None and task['status'] == TASK_STATES['COMPLETED']:
+                    task_logger.info("任务已标记为完成（例如 members-only 跳过），终止后续处理")
+                    return
                 if task is not None and task['status'] == TASK_STATES['FAILED']:
                     task_logger.error("下载视频文件失败，终止任务处理")
                     return
@@ -2592,7 +2995,14 @@ class TaskProcessor:
                 _raise_if_cancelled(task_id, task_logger)
 
             # 6. 上传
-            if self.config.get('AUTO_MODE_ENABLED', False):
+            task_before_upload = get_task(task_id)
+            task_auto_upload = task_before_upload.get('auto_upload') if task_before_upload else None
+            if task_auto_upload is None:
+                should_auto_upload = bool(self.config.get('AUTO_MODE_ENABLED', False))
+            else:
+                should_auto_upload = bool(task_auto_upload)
+
+            if should_auto_upload:
                 # 若已有上传响应，避免重复上传
                 task = get_task(task_id)
                 upload_target = _get_task_upload_target(task)
@@ -2619,8 +3029,8 @@ class TaskProcessor:
                 if task['status'] == TASK_STATES['AWAITING_REVIEW']:
                     task_logger.info("任务当前处于人工审核状态，保留待审核状态")
                 elif task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
-                    # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
-                    if not self.config.get('AUTO_MODE_ENABLED', False) or not _task_has_upload_response(task, upload_target):
+                    # 如果没有开启自动投稿或者上传失败，则标记为"准备上传"
+                    if not should_auto_upload or not _task_has_upload_response(task, upload_target):
                         update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
                         task_logger.info("任务处理完成，标记为准备上传")
                     else:
@@ -2670,6 +3080,10 @@ class TaskProcessor:
     
     def _check_and_start_next_pending_task(self):
         """检查并启动下一个pending任务"""
+        if not _PENDING_DISPATCH_MUTEX.acquire(blocking=False):
+            logger.debug("已有调度线程正在检查 pending 队列，跳过重复触发")
+            return
+
         try:
             self._refresh_runtime_limits(force=False)
             # 获取所有pending任务
@@ -2724,7 +3138,82 @@ class TaskProcessor:
             
             # 按创建时间排序，启动最早的pending任务
             pending_tasks.sort(key=lambda x: x['created_at'])
-            next_task = pending_tasks[0]
+
+            # 统计各 Playlist 当前正在运行中的任务数量
+            # 必须综合 DB 运行中任务与活跃线程集合 active_task_ids 中的任务
+            all_running_tasks = list(running_tasks)
+            known_task_ids = {t.get('id') for t in running_tasks if t.get('id')}
+            missing_active_ids = set(active_task_ids) - known_task_ids
+            for mid in missing_active_ids:
+                m_task = get_task(mid)
+                if m_task:
+                    all_running_tasks.append(m_task)
+
+            playlist_running_counts = {}
+            for r_task in all_running_tasks:
+                p_mon_id = r_task.get('playlist_monitor_id')
+                p_id = r_task.get('playlist_id')
+                if p_mon_id:
+                    playlist_running_counts[f"mon_{p_mon_id}"] = playlist_running_counts.get(f"mon_{p_mon_id}", 0) + 1
+                if p_id:
+                    playlist_running_counts[f"pid_{p_id}"] = playlist_running_counts.get(f"pid_{p_id}", 0) + 1
+
+            next_task = None
+            for cand_task in pending_tasks:
+                cand_mon_id = cand_task.get('playlist_monitor_id')
+                cand_pid = cand_task.get('playlist_id')
+                
+                # 检查该任务所属的 Playlist 是否达到最大并发限制
+                if cand_mon_id or cand_pid:
+                    try:
+                        from modules.playlist_monitor import get_playlist_max_concurrency
+                        p_max_concurrency = get_playlist_max_concurrency(cand_mon_id, cand_pid)
+                    except Exception:
+                        p_max_concurrency = 1
+
+                    cur_running = 0
+                    if cand_mon_id:
+                        cur_running = max(cur_running, playlist_running_counts.get(f"mon_{cand_mon_id}", 0))
+                    if cand_pid:
+                        cur_running = max(cur_running, playlist_running_counts.get(f"pid_{cand_pid}", 0))
+                    
+                    if cur_running >= p_max_concurrency:
+                        logger.info(
+                            f"任务 {cand_task['id'][:8]} 所属播放列表 ({cand_mon_id or cand_pid}) "
+                            f"当前运行中任务数 {cur_running} 已达最大并发限制 {p_max_concurrency}，等待其已有任务完成"
+                        )
+                        continue
+
+                    # 检查该任务所属 Playlist 是否处于防风控任务执行间隔冷却中
+                    try:
+                        from modules.playlist_monitor import get_playlist_interval_cooling_info
+                        is_cooling, rem_sec = get_playlist_interval_cooling_info(cand_mon_id, cand_pid)
+                        if is_cooling:
+                            logger.info(
+                                f"任务 {cand_task['id'][:8]} 所属播放列表 ({cand_mon_id or cand_pid}) "
+                                f"处于防风控执行间隔冷却中，还需等待 {rem_sec} 秒 ({round(rem_sec / 60, 1)} 分钟)"
+                            )
+                            continue
+                    except Exception as e:
+                        logger.debug(f"检查播放列表冷却失败: {e}")
+
+                    # 检查同 Playlist 是否有失败任务，有则阻塞后续任务防止连续失败
+                    p_has_failed, p_failed_count = has_failed_tasks_in_playlist(
+                        monitor_id=cand_mon_id, playlist_id=cand_pid, exclude_task_id=cand_task['id']
+                    )
+                    if p_has_failed:
+                        logger.info(
+                            f"任务 {cand_task['id'][:8]} 所属播放列表 ({cand_mon_id or cand_pid}) "
+                            f"存在 {p_failed_count} 个失败任务，暂不调度以防止连续失败"
+                        )
+                        continue
+
+                next_task = cand_task
+                break
+
+            if not next_task:
+                logger.info("当前所有 pending 任务均处于所属 Playlist 最大并发限制或防风控冷却中，暂无任务启动")
+                return
             
             logger.info(f"发现pending任务，准备启动: {next_task['id'][:8]}... ({next_task.get('youtube_url', 'Unknown URL')[-30:]})")
             
@@ -2737,47 +3226,150 @@ class TaskProcessor:
                 
         except Exception as e:
             logger.error(f"检查和启动下一个pending任务时出错: {str(e)}")
+        finally:
+            _PENDING_DISPATCH_MUTEX.release()
     
+    def _get_valid_youtube_cookies_path(self, task_logger):
+        """解析并验证 YouTube Cookies 路径，若有效则返回绝对路径，否则返回 None。"""
+        cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
+        if not cookies_path:
+            return None
+        is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
+        if not is_valid:
+            task_logger.warning(f"YouTube Cookies验证未通过: {error_msg}")
+            return None
+        return cookies_path
+
+    def _download_video_data_with_cookie_fallback(
+        self,
+        task_id: str,
+        youtube_url: str,
+        task_logger,
+        skip_download: bool = False,
+        only_video: bool = False,
+        progress_callback = None,
+    ):
+        """下载视频数据或采集信息：普通下载不带 Cookie，仅当报错需要 Cookie 时带上 Cookie 重试。"""
+        from modules.youtube_handler import download_video_data
+
+        cancel_event = get_task_cancel_event(task_id)
+        _raise_if_cancelled(task_id, task_logger)
+
+        # 1. 首次尝试：普通下载不带 Cookie
+        success = False
+        result = None
+        first_error_for_cookie = None
+
+        try:
+            success, result = download_video_data(
+                youtube_url,
+                task_id,
+                cookies_file_path=None,
+                skip_download=skip_download,
+                only_video=only_video,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+            )
+            if not success:
+                first_error_for_cookie = str(result)
+        except TaskCancelledError:
+            raise
+        except Exception as e:
+            if is_task_cancelled(task_id):
+                task_logger.info("下载过程中检测到任务取消请求")
+                raise TaskCancelledError("任务已取消")
+            first_error_for_cookie = str(e)
+            result = str(e)
+
+        if success:
+            return True, result
+
+        # 2. 检查是否检测到任务取消
+        if is_task_cancelled(task_id):
+            task_logger.info("检测到任务取消请求，终止后续操作")
+            raise TaskCancelledError("任务已取消")
+
+        # 3. 检查失败原因是否指示需要 Cookie
+        if not is_cookie_required_error(first_error_for_cookie):
+            task_logger.info("下载失败但未检测到需要 Cookie 的错误特征，跳过 Cookie 重试")
+            return False, result
+
+        # 4. 报错需要 Cookie，尝试获取并验证本地 Cookies
+        if is_members_only_error(first_error_for_cookie):
+            task_logger.info(
+                f"检测到可能为 YouTube 会员专属 (members-only) 视频 (错误信息: {first_error_for_cookie})，准备检查是否配置了 Cookie..."
+            )
+        else:
+            task_logger.warning(
+                f"检测到可能需要 Cookie 或登录验证 (错误信息: {first_error_for_cookie})，准备带上 Cookie 重试..."
+            )
+        cookies_path = self._get_valid_youtube_cookies_path(task_logger)
+        if not cookies_path:
+            if is_members_only_error(first_error_for_cookie):
+                task_logger.info("检测到 members-only 视频且未配置有效 YouTube Cookies 文件，跳过 Cookie 重试")
+                return False, first_error_for_cookie
+            task_logger.error("检测到需要 YouTube Cookie，但未找到或未配置有效的 Cookies 文件")
+            return False, f"需要 YouTube Cookie 但未配置有效凭证: {first_error_for_cookie}"
+
+        _raise_if_cancelled(task_id, task_logger)
+        task_logger.info(f"带上 YouTube Cookies 重新尝试: {cookies_path}")
+
+        try:
+            success, result = download_video_data(
+                youtube_url,
+                task_id,
+                cookies_file_path=cookies_path,
+                skip_download=skip_download,
+                only_video=only_video,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+            )
+            return success, result
+        except TaskCancelledError:
+            raise
+        except Exception as retry_e:
+            if is_task_cancelled(task_id):
+                task_logger.info("重试过程中检测到任务取消请求")
+                raise TaskCancelledError("任务已取消")
+            task_logger.error(f"带 Cookie 重试执行时发生异常: {str(retry_e)}")
+            return False, f"带 Cookie 重试异常: {str(retry_e)}"
+
     def _fetch_video_info(self, task_id, youtube_url, task_logger):
         """只采集视频元数据和封面，不下载视频文件"""
-        from modules.youtube_handler import download_video_data
         task_logger.info(f"采集视频信息: {youtube_url}")
         update_task(task_id, status='fetching_info')
 
         _raise_if_cancelled(task_id, task_logger)
-        
-        cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
-        
-        # 验证cookies文件
-        if cookies_path:
-            is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
-            if not is_valid:
-                task_logger.error(f"YouTube Cookies验证失败: {error_msg}")
-                # 尝试不使用cookies继续
-                task_logger.info("尝试不使用cookies继续采集信息...")
-                cookies_path = None
-                
-        # 只采集信息
+
         try:
-            cancel_event = get_task_cancel_event(task_id)
-            success, result = download_video_data(
-                youtube_url,
-                task_id,
-                cookies_path,
+            success, result = self._download_video_data_with_cookie_fallback(
+                task_id=task_id,
+                youtube_url=youtube_url,
+                task_logger=task_logger,
                 skip_download=True,
-                cancel_event=cancel_event
             )
+        except TaskCancelledError:
+            task_logger.info("采集信息过程中检测到任务取消请求")
+            raise
         except Exception as e:
             if is_task_cancelled(task_id):
                 task_logger.info("采集信息过程中检测到任务取消请求")
                 raise TaskCancelledError("任务已取消")
+            if is_members_only_error(str(e)):
+                task_logger.info(f"采集视频信息时检测到 members-only 视频，跳过后续处理: {str(e)}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"采集视频信息时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息异常: {str(e)}")
             return
-            
+
+        if is_task_cancelled(task_id):
+            task_logger.info("采集信息完成前检测到任务取消请求")
+            raise TaskCancelledError("任务已取消")
+
         if success:
             task_logger.info("视频信息采集成功")
-            metadata_path = result.get('metadata_path')
+            metadata_path = result.get('metadata_path') if isinstance(result, dict) else None
             video_title = ""
             video_description = ""
             if metadata_path and os.path.exists(metadata_path):
@@ -2793,42 +3385,34 @@ class TaskProcessor:
                 status='info_fetched',
                 video_title_original=video_title,
                 description_original=video_description,
-                cover_path_local=result.get('cover_path', ''),
+                cover_path_local=result.get('cover_path', '') if isinstance(result, dict) else '',
                 metadata_json_path_local=metadata_path
             )
         else:
+            if is_members_only_error(result):
+                task_logger.info(f"采集视频信息时检测到 members-only 视频，跳过后续处理: {result}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"视频信息采集失败: {result}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"采集信息失败: {result}")
 
     def _download_video_file(self, task_id, youtube_url, task_logger):
         """审核通过后下载视频文件"""
-        from modules.youtube_handler import download_video_data
         task_logger.info(f"审核通过，开始下载视频文件: {youtube_url}")
         update_task(task_id, status=TASK_STATES['DOWNLOADING'])
 
         _raise_if_cancelled(task_id, task_logger)
-        
-        cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
-        
-        # 验证cookies文件
-        if cookies_path:
-            is_valid, error_msg = validate_cookies(cookies_path, "YouTube")
-            if not is_valid:
-                task_logger.error(f"YouTube Cookies验证失败: {error_msg}")
-                # 尝试不使用cookies继续
-                task_logger.info("尝试不使用cookies继续下载...")
-                cookies_path = None
-                
+
         # 定义进度回调函数
         def progress_callback(progress_info):
             percent = progress_info.get('percent', 0)
             file_size = progress_info.get('file_size', '')
             speed = progress_info.get('speed', '')
             eta = progress_info.get('eta', '')
-            
+
             # 只显示百分比，简洁明了
             progress_msg = f"{percent:.1f}%"
-            
+
             # 详细信息记录到日志
             detailed_msg = progress_msg
             if file_size:
@@ -2837,60 +3421,92 @@ class TaskProcessor:
                 detailed_msg += f" @ {speed}"
             if eta:
                 detailed_msg += f" ETA {eta}"
-            
+
             # 不再把每次下载进度记录为 INFO 到文件，以减少日志噪声；保留网页进度显示
             task_logger.debug(f"下载进度: {detailed_msg}")
             # 更新任务的上传进度字段用于显示（只显示百分比）
             update_task(task_id, upload_progress=progress_msg, silent=True)
-        
-        # 只下载视频文件
+
         try:
-            cancel_event = get_task_cancel_event(task_id)
-            success, result = download_video_data(
-                youtube_url,
-                task_id,
-                cookies_path,
+            success, result = self._download_video_data_with_cookie_fallback(
+                task_id=task_id,
+                youtube_url=youtube_url,
+                task_logger=task_logger,
                 only_video=True,
                 progress_callback=progress_callback,
-                cancel_event=cancel_event
             )
+        except TaskCancelledError:
+            task_logger.info("下载过程中检测到任务取消请求")
+            raise
         except Exception as e:
             if is_task_cancelled(task_id):
                 task_logger.info("下载过程中检测到任务取消请求")
                 raise TaskCancelledError("任务已取消")
+            if is_members_only_error(str(e)):
+                task_logger.info(f"检测到 members-only 视频，跳过下载与上传: {str(e)}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"下载视频文件时发生异常: {str(e)}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载异常: {str(e)}")
             return
+
         if is_task_cancelled(task_id):
             task_logger.info("下载完成前检测到任务取消请求")
             raise TaskCancelledError("任务已取消")
+
         if success:
             task_logger.info("视频文件下载成功")
-            
+
             # 获取当前任务信息
             task = get_task(task_id)
-            
+
             update_data = {
                 'status': TASK_STATES['DOWNLOADED'],
-                'video_path_local': result.get('video_path', ''),
+                'video_path_local': result.get('video_path', '') if isinstance(result, dict) else '',
                 'upload_progress': None  # 清除进度显示
             }
-            
+
             # 如果结果中包含元数据和封面信息，保存这些信息
             # 这是因为我们修改了download_video_data函数，使其在only_video=True时也能返回之前保存的元数据和封面
-            if task is not None:
+            if task is not None and isinstance(result, dict):
                 if result.get('metadata_path') and not task.get('metadata_json_path_local'):
                     update_data['metadata_json_path_local'] = result.get('metadata_path')
-                    
+
                 if result.get('cover_path') and not task.get('cover_path_local'):
                     update_data['cover_path_local'] = result.get('cover_path')
-            else:
+            elif task is None:
                 task_logger.warning("任务对象为 None，无法更新元数据和封面信息")
-                
+
             update_task(task_id, **update_data)
         else:
+            if is_members_only_error(result):
+                task_logger.info(f"检测到 members-only 视频，跳过下载与上传: {result}")
+                self._mark_task_members_only(task_id, task_logger)
+                return
             task_logger.error(f"视频文件下载失败: {result}")
             update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"下载视频失败: {result}")
+
+    def _mark_task_members_only(self, task_id: str, task_logger=None) -> None:
+        """遇到 members-only 视频时直接跳过，显示已完成，上传结果显示 members-only。"""
+        task = get_task(task_id)
+        upload_target = _get_task_upload_target(task)
+
+        updates = {
+            'status': TASK_STATES['COMPLETED'],
+            'error_message': None,
+            'upload_progress': None,
+        }
+        if upload_target == UPLOAD_TARGET_BOTH:
+            updates['acfun_upload_response'] = 'members-only'
+            updates['bilibili_upload_response'] = 'members-only'
+        elif upload_target == UPLOAD_TARGET_BILIBILI:
+            updates['bilibili_upload_response'] = 'members-only'
+        else:
+            updates['acfun_upload_response'] = 'members-only'
+
+        update_task(task_id, **updates)
+        if task_logger:
+            task_logger.info("检测到 members-only 会员专属视频，已直接跳过，任务状态更新为已完成，上传结果记录为 members-only")
 
     def _recover_cover_path(self, task_id, cover_path, task_logger):
         """尝试恢复缺失的封面文件路径。
@@ -2982,14 +3598,9 @@ class TaskProcessor:
                 youtube_url,
             ]
 
-            cookies_path = resolve_youtube_cookies_path(self.config, task_logger)
-
-            if cookies_path:
-                cookies_path = _resolve_safe_cookies_path(cookies_path, task_logger)
-
             config = self.config
             proxy_url = build_proxy_url(config)
-            _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+            _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=None)
 
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=120,
@@ -2998,6 +3609,34 @@ class TaskProcessor:
             task_logger.debug(f"yt-dlp 封面采集输出: {proc.stdout}")
             if proc.returncode != 0:
                 task_logger.warning(f"yt-dlp 封面采集返回非零状态: {proc.returncode}, stderr: {proc.stderr}")
+                combined_err = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+                if is_cookie_required_error(combined_err):
+                    cookies_path = self._get_valid_youtube_cookies_path(task_logger)
+                    if cookies_path:
+                        cookies_path = _resolve_safe_cookies_path(cookies_path, task_logger)
+                    if cookies_path:
+                        task_logger.info(f"重新采集封面检测到需要 Cookie，带上 YouTube Cookies 重试: {cookies_path}")
+                        retry_cmd = yt_dlp_cmd + [
+                            '-o', os.path.join(task_dir, 'video.%(ext)s'),
+                            '--write-thumbnail',
+                            '--skip-download',
+                            '--no-write-info-json',
+                            '--no-playlist',
+                            '--ignore-no-formats-error',
+                            youtube_url,
+                        ]
+                        _append_yt_dlp_network_args(retry_cmd, proxy_url=proxy_url, cookies_path=cookies_path)
+                        proc = subprocess.run(
+                            retry_cmd, capture_output=True, text=True, timeout=120,
+                            encoding='utf-8', errors='replace',
+                        )
+                        task_logger.debug(f"yt-dlp 封面采集(带Cookie重试)输出: {proc.stdout}")
+                        if proc.returncode != 0:
+                            task_logger.warning(
+                                f"yt-dlp 封面采集(带Cookie重试)返回非零状态: {proc.returncode}, stderr: {proc.stderr}"
+                            )
+                    else:
+                        task_logger.warning("重新采集封面检测到需要 Cookie，但未找到有效 YouTube Cookies")
 
             # yt-dlp 使用 -o video.%(ext)s 模板，但缩略图扩展名/文件名并不一定严格固定。
             # 重新扫描任务目录，优先匹配 video*.{jpg,jpeg,png,webp}，再回退到目录内其他图片文件。
@@ -3037,6 +3676,50 @@ class TaskProcessor:
             task_logger.warning(f"重新采集封面时发生异常: {e}")
         return ''
 
+    def _apply_playlist_overrides(self, task_id, task, task_logger):
+        """独立于翻译流程，应用 Playlist 配置的标题正则替换和统一投稿简介。"""
+        mon = None
+        updates = {}
+
+        try:
+            from modules.playlist_monitor import playlist_monitor_manager, apply_title_replacement
+            mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+        except Exception as e:
+            task_logger.warning(f"获取 playlist monitor 配置失败: {e}")
+            return
+
+        if not mon:
+            return
+
+        # 统一投稿简介
+        if not task.get('custom_description') and mon.get('custom_description'):
+            updates['custom_description'] = mon['custom_description']
+            task_logger.info("从所属播放列表获取统一投稿简介 (custom_description)")
+
+        # 检查是否开启标题自动翻译
+        should_trans_title = _should_translate_title_for_task(task, self.config, task_logger)
+        if should_trans_title:
+            task_logger.info("已开启标题自动翻译，标题正则替换将延后至翻译完成后执行")
+        else:
+            # 未开启标题自动翻译：直接对原标题执行正则替换（若配置了 title_template）
+            if mon.get('title_template') and task.get('video_title_original'):
+                try:
+                    replaced = apply_title_replacement(
+                        task['video_title_original'],
+                        mon.get('title_pattern'),
+                        mon.get('title_template')
+                    )
+                    if replaced:
+                        updates['video_title_translated'] = replaced
+                        task_logger.info(f"标题正则替换命中: \"{task['video_title_original']}\" → \"{replaced}\"")
+                    else:
+                        task_logger.debug(f"标题正则替换未命中 (pattern={mon.get('title_pattern')})")
+                except Exception as e:
+                    task_logger.warning(f"标题替换规则处理异常: {e}")
+
+        if updates:
+            update_task(task_id, **updates)
+
     def _translate_content(self, task_id, task_logger):
         """翻译视频标题和描述"""
         from modules.ai_enhancer import translate_video_metadata
@@ -3072,16 +3755,56 @@ class TaskProcessor:
             if prompt_key in self.config:
                 openai_config[prompt_key] = self.config[prompt_key]
         
-        translate_title = bool(self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'))
-        translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
+        # 如果标题已被 playlist 正则替换过，或未开启标题自动翻译，跳过标题 AI 翻译
+        task_translate_title = _should_translate_title_for_task(task, self.config, task_logger)
+        has_orig_title = bool(task.get('video_title_original'))
+        has_trans_title = bool(task.get('video_title_translated'))
+        translate_title = bool(
+            task_translate_title
+            and has_orig_title
+            and not has_trans_title
+        )
+
+        if translate_title:
+            task_logger.info(f"执行内容翻译：【启动标题翻译】(原标题: '{task.get('video_title_original')}')")
+        else:
+            if not task_translate_title:
+                task_logger.info("执行内容翻译：【不启动标题翻译】(原因: 自动翻译标题未开启)")
+            elif not has_orig_title:
+                task_logger.info("执行内容翻译：【不启动标题翻译】(原因: 缺少视频原始标题)")
+            elif has_trans_title:
+                task_logger.info(f"执行内容翻译：【不启动标题翻译】(原因: 已有译文标题: '{task.get('video_title_translated')}')")
+
+        translate_description = bool(_as_bool(self.config.get('TRANSLATE_DESCRIPTION', False)) and task.get('description_original'))
+
+        # 检查统一投稿简介（已由 _apply_playlist_overrides 写入 custom_description）
+        custom_desc = task.get('custom_description')
+        if custom_desc:
+            task_logger.info("检测到统一投稿简介 (custom_description)，跳过简介 AI 翻译，使用固定简介")
+            translate_description = False
+
+        if translate_title and not translate_description:
+            task_logger.info("执行内容翻译：【仅启动标题翻译，移除描述】")
+        elif translate_title and translate_description:
+            task_logger.info("执行内容翻译：【同时启动标题与描述翻译】")
+        elif not translate_title and translate_description:
+            task_logger.info("执行内容翻译：【仅启动描述翻译，不翻译标题】")
 
         if not translate_title and not translate_description:
-            task_logger.info("标题和描述翻译均已禁用或缺少原文，跳过")
+            task_logger.info("标题和描述翻译均已禁用、无需翻译或缺少原文，跳过")
+            skip_updates = {}
+            if custom_desc:
+                skip_updates['description_translated'] = custom_desc
+            if skip_updates:
+                update_task(task_id, **skip_updates)
             return True
+
+        # 当仅翻译标题时，不传入原始简介，避免描述被带入
+        desc_input = task.get('description_original', '') if translate_description else ''
 
         translated = translate_video_metadata(
             task.get('video_title_original', ''),
-            task.get('description_original', ''),
+            desc_input,
             target_language="zh-CN",
             openai_config=openai_config,
             task_id=task_id,
@@ -3092,9 +3815,38 @@ class TaskProcessor:
         )
 
         updates = {}
+        custom_desc = task.get('custom_description')
+        if custom_desc:
+            updates['description_translated'] = custom_desc
+
         requested_fields = set(translated.get('requested_fields') or [])
         if translate_title and 'title' in requested_fields:
-            updates['video_title_translated'] = translated.get('title', '')
+            trans_title = translated.get('title', '')
+            final_title = trans_title
+            # 若所属播放列表配置了标题替换规则，在翻译后执行正则替换
+            if task.get('playlist_monitor_id'):
+                try:
+                    from modules.playlist_monitor import playlist_monitor_manager, apply_title_replacement
+                    mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+                    if mon and mon.get('title_template'):
+                        replaced = apply_title_replacement(
+                            trans_title,
+                            mon.get('title_pattern'),
+                            mon.get('title_template')
+                        )
+                        if replaced:
+                            task_logger.info(
+                                f"翻译后标题正则替换成功: \"{trans_title}\" → \"{replaced}\" "
+                                f"(pattern={mon.get('title_pattern') or '全匹配'}, template={mon.get('title_template')})"
+                            )
+                            final_title = replaced
+                        else:
+                            task_logger.info(
+                                f"翻译后标题正则未命中 (pattern={mon.get('title_pattern')})，保留翻译标题: \"{trans_title}\""
+                            )
+                except Exception as e:
+                    task_logger.warning(f"翻译后标题正则替换执行异常: {e}")
+            updates['video_title_translated'] = final_title
         if translate_description and 'description' in requested_fields:
             updates['description_translated'] = translated.get('description', '')
 
@@ -3107,13 +3859,28 @@ class TaskProcessor:
             return True
 
         review_message = translated.get('error_message') or _build_missing_translation_review_message(requested_fields)
-        updates.update({
-            'status': TASK_STATES['AWAITING_REVIEW'],
-            'error_message': review_message,
-            'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
-        })
-        update_task(task_id, **updates)
-        task_logger.warning(review_message)
+        failed_fields = translated.get('failed_fields') or {}
+
+        # 判断是否所有失败原因均为异常/不可恢复错误（如 API 异常、配置缺失）
+        # 这类情况没有产生任何有效译文，人工审核无意义，应直接标记为失败
+        from modules.ai_enhancer import is_hard_failure_metadata_translation
+        if is_hard_failure_metadata_translation(failed_fields):
+            error_message = review_message.replace("任务已转入人工审核", "任务已标记为失败")
+            updates.update({
+                'status': TASK_STATES['FAILED'],
+                'error_message': error_message,
+                'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
+            })
+            update_task(task_id, **updates)
+            task_logger.error(error_message)
+        else:
+            updates.update({
+                'status': TASK_STATES['AWAITING_REVIEW'],
+                'error_message': review_message,
+                'error_category': METADATA_TRANSLATION_ERROR_CATEGORY,
+            })
+            update_task(task_id, **updates)
+            task_logger.warning(review_message)
         return False
 
     def _ensure_required_translations_ready(self, task_id, task, task_logger, allow_missing_translations=False):
@@ -7065,11 +7832,17 @@ class TaskProcessor:
         
         task_logger.info("开始生成视频标签")
         update_task(task_id, status=TASK_STATES['TAGGING'])
+
+        # 优先检查是否已有预设标签（如所属 Playlist 统一配置的标签）
+        existing_tags = _normalize_tags_list(task.get('tags_generated'))
+        if existing_tags:
+            task_logger.info(f"任务已配置预设标签，跳过AI大模型标签生成，直接使用预设标签: {existing_tags}")
+            return True
         
         # 优先使用翻译后的元数据，避免将原始导流文本继续送给标签模型
         from modules.utils import safe_str
         title = safe_str(task.get('video_title_translated') or task.get('video_title_original'))
-        description = safe_str(task.get('description_translated') or task.get('description_original'))
+        description = safe_str(task.get('custom_description') or task.get('description_translated') or task.get('description_original'))
         
         # 构建OpenAI配置
         openai_config = {
@@ -7122,11 +7895,11 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['PARTITIONING'])
 
         title = task.get('video_title_translated', '') or task.get('video_title_original', '')
-        description = task.get('description_translated', '') or task.get('description_original', '')
+        description = task.get('custom_description') or task.get('description_translated', '') or task.get('description_original', '')
         title_original = task.get('video_title_original', '') or ''
         description_original = task.get('description_original', '') or ''
         title_translated = task.get('video_title_translated', '') or ''
-        description_translated = task.get('description_translated', '') or ''
+        description_translated = task.get('custom_description') or task.get('description_translated', '') or ''
         tags_generated = _normalize_tags_list(task.get('tags_generated'))
         if task.get('tags_generated') and not tags_generated:
             task_logger.warning("解析 AI 标签失败或标签为空，分区推荐将忽略标签上下文")
@@ -7905,6 +8678,9 @@ class TaskProcessor:
             
             # 重新获取任务信息
             task = get_task(task_id)
+            if task and task.get('status') in (TASK_STATES['FAILED'], TASK_STATES['COMPLETED']):
+                task_logger.info("任务已处于完成或失败状态（如 members-only 跳过），终止 AcFun 上传")
+                return
             video_path = task.get('video_path_local', '') if task else ''
             cover_path = task.get('cover_path_local', '') if task else ''
         
@@ -8096,7 +8872,19 @@ class TaskProcessor:
         video_path = task.get('video_path_local', '') if task else ''
         cover_path = task.get('cover_path_local', '') if task else ''
         title = (task.get('video_title_translated', '') or task.get('video_title_original', '')) if task else ''
-        description = (task.get('description_translated', '') or task.get('description_original', '')) if task else ''
+        
+        # 优先使用 playlist 统一配置的投稿简介 (custom_description)
+        custom_desc = task.get('custom_description') if task else None
+        if not custom_desc and task and task.get('playlist_monitor_id'):
+            try:
+                from modules.playlist_monitor import playlist_monitor_manager
+                mon = playlist_monitor_manager.get_monitor(task['playlist_monitor_id'])
+                if mon and mon.get('custom_description'):
+                    custom_desc = mon['custom_description']
+            except Exception:
+                pass
+
+        description = (custom_desc or (task.get('description_translated', '') or task.get('description_original', ''))) if task else ''
         upload_target = _get_task_upload_target(task)
         effective_limits = _get_effective_metadata_limits(upload_target)
         partition_id = ''
@@ -8121,6 +8909,9 @@ class TaskProcessor:
 
             self._download_video_file(task_id, youtube_url, task_logger)
             task = get_task(task_id)
+            if task and task.get('status') in (TASK_STATES['FAILED'], TASK_STATES['COMPLETED']):
+                task_logger.info("任务已处于完成或失败状态（如 members-only 跳过），终止 Bilibili 上传")
+                return
             video_path = task.get('video_path_local', '') if task else ''
             cover_path = task.get('cover_path_local', '') if task else ''
 
@@ -8168,6 +8959,8 @@ class TaskProcessor:
             )
         except Exception as e:
             task_logger.warning(f"构建bilibili投稿简介失败，回退原简介: {e}")
+
+        task_logger.info(f"bilibili 上传 description (字数: {len(description)}):\n{description}")
 
         if self.config.get('YOUTUBE_UPLOADER_AS_FIRST_TAG', False):
             from modules.utils import safe_str
@@ -8317,6 +9110,36 @@ class TaskProcessor:
                     bilibili_upload_response=json.dumps(result, ensure_ascii=False),
                     upload_progress=None
                 )
+
+                # 如果配置了 Bilibili 合集，尝试将视频加入指定合集
+                season_id = task.get('bilibili_season_id')
+                section_id = task.get('bilibili_section_id')
+                if season_id:
+                    try:
+                        from modules.bilibili_season import add_video_to_season
+                        bvid = result.get('bvid') if isinstance(result, dict) else None
+                        aid = result.get('aid') if isinstance(result, dict) else None
+                        cid = result.get('cid') if isinstance(result, dict) else None
+                        task_logger.debug(
+                            f"[debug] 准备调用 add_video_to_season: season_id={season_id}, "
+                            f"section_id={section_id}, aid={aid}, bvid={bvid}, cid={cid}, title={title!r}"
+                        )
+                        add_ok, add_msg = add_video_to_season(
+                            season_id=int(season_id),
+                            aid=aid,
+                            bvid=bvid,
+                            cid=cid,
+                            title=title,
+                            section_id=int(section_id) if section_id else None,
+                            cookie_file=bilibili_cookies_path
+                        )
+                        if add_ok:
+                            task_logger.info(f"视频 ({bvid or aid}) 已成功加入 Bilibili 合集 (ID: {season_id})")
+                        else:
+                            task_logger.warning(f"视频加入 Bilibili 合集未成功: {add_msg}")
+                    except Exception as s_exc:
+                        task_logger.warning(f"添加视频到合集发生异常（不影响视频上传成功）: {s_exc}", exc_info=True)
+
                 # 上传到 B 站成功后立即删除本地文件，腾出磁盘空间，
                 # 避免大视频（如 CS2 比赛直播流，单条可达十余 GB）长期占用磁盘，
                 # 导致后续任务因「No space left on device」而失败。
@@ -8352,13 +9175,14 @@ class TaskProcessor:
             )
 
 # 任务控制函数
-def start_task(task_id, config=None):
+def start_task(task_id, config=None, ignore_interval=False):
     """
     启动任务处理
     
     Args:
         task_id: 任务ID
         config: 配置信息
+        ignore_interval: 是否忽略播放列表防风控执行间隔
     
     Returns:
         success: 启动是否成功
@@ -8374,6 +9198,10 @@ def start_task(task_id, config=None):
         logger.warning(f"任务 {task_id} 状态为 {task['status']}，不能启动")
         return False
     
+    # 失败任务手动重新开始时，自动忽略防风控间隔限制
+    if task['status'] == TASK_STATES['FAILED']:
+        ignore_interval = True
+    
     # 如果没有提供配置，尝试从Flask app获取
     if not config:
         try:
@@ -8388,8 +9216,8 @@ def start_task(task_id, config=None):
     # 使用全局任务处理器，确保并发控制生效
     processor = get_global_task_processor(config)
     
-    # 调度任务
-    job_id = processor.schedule_task(task_id)
+    # 调度任务（失败任务重启忽略风控间隔）
+    job_id = processor.schedule_task(task_id, ignore_interval=ignore_interval)
     
     return job_id is not None
 

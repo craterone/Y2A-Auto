@@ -15,7 +15,7 @@ import threading
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context, send_from_directory, abort
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
@@ -58,6 +58,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
+
+# 前端构建产物目录
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+WEB_DIST_DIR = os.path.join(WEB_DIR, 'dist')
 
 
 @app.context_processor
@@ -1219,20 +1223,43 @@ def tgbot_upload_token_required(f):
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return f(*args, **kwargs)
+
         config = load_config()
         if config.get('password_protection_enabled'):
             if 'logged_in' not in session:
+                # 检查是否携带有效的 Bearer Token
+                token = _extract_bearer_token()
+                if token and _verify_tgbot_api_token(token, config):
+                    return f(*args, **kwargs)
+
+                # 判断是否为 API 请求或客户端明确要求 JSON 响应
+                is_api_request = (
+                    request.path.startswith('/api/')
+                    or request.is_json
+                    or request.headers.get('Accept', '').startswith('application/json')
+                    or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+                )
+                if is_api_request:
+                    return jsonify({'success': False, 'message': '未登录或登录已过期，请先登录'}), 401
+
                 flash('请先登录以访问此页面。', 'info')
                 return redirect(url_for('login', next=request.full_path))
         return f(*args, **kwargs)
     return decorated_function
 
-# 配置CORS，允许来自YouTube的跨域请求
+# 配置CORS，允许来自YouTube及API调用的跨域请求
 CORS(app, resources={
     r"/tasks/add_via_extension": {
         "origins": [r"https?://www\.youtube\.com", r"https?://youtube\.com"],
         "methods": ["POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
+    },
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"]
     }
 })
 
@@ -1600,10 +1627,35 @@ def logout():
     return redirect(url_for('login'))
 
 @app.route('/')
-@login_required
 def index():
-    """首页"""
-    logger.info("访问首页")
+    """新版 Web 首页（React SPA）"""
+    index_file = os.path.join(WEB_DIST_DIR, 'index.html')
+    if os.path.isfile(index_file):
+        return send_from_directory(WEB_DIST_DIR, 'index.html')
+    # 若前端尚未构建，回退到旧版仪表盘
+    logger.warning("web/dist/index.html 未找到，回退到旧版仪表盘")
+    return redirect(url_for('old'))
+
+@app.route('/assets/<path:filename>')
+def serve_web_assets(filename):
+    """服务 web/dist/assets 下的静态资源"""
+    assets_dir = os.path.join(WEB_DIST_DIR, 'assets')
+    return send_from_directory(assets_dir, filename)
+
+@app.route('/<path:filename>')
+def serve_web_root_static(filename):
+    """服务 web/dist 根目录下的静态资源（如 favicon.svg、icons.svg 等）"""
+    file_path = safe_join(WEB_DIST_DIR, filename)
+    if file_path and os.path.isfile(file_path):
+        return send_from_directory(WEB_DIST_DIR, filename)
+    abort(404)
+
+@app.route('/old')
+@app.route('/old.html')
+@login_required
+def old():
+    """旧版仪表盘页面"""
+    logger.info("访问旧版仪表盘页面")
     # 统计信息用于仪表盘
     try:
         from modules.task_manager import get_db_connection
@@ -1675,7 +1727,9 @@ def index():
             upload_id = None
             upload_target = (r[5] or 'acfun').lower()
             try:
-                if upload_target == 'both':
+                if r[6] == 'members-only' or r[7] == 'members-only':
+                    upload_id = 'members-only'
+                elif upload_target == 'both':
                     resp_b = json.loads(r[7]) if r[7] else None
                     resp_a = json.loads(r[6]) if r[6] else None
                     bv = resp_b.get('bvid') if isinstance(resp_b, dict) else None
@@ -1733,7 +1787,7 @@ def index():
         }
         recent_tasks = []
 
-    return render_template('index.html', stats=stats, recent_tasks=recent_tasks)
+    return render_template('old.html', stats=stats, recent_tasks=recent_tasks)
 
 @app.route('/tasks')
 @login_required
@@ -3925,6 +3979,14 @@ def cookie_refresh_needed():
         logger.error(f"处理Cookie刷新需求失败: {str(e)}")
         return jsonify({'error': '处理失败，请稍后重试'}), 500
 
+
+# ==========================================
+# 注册 RESTful API 蓝图
+# ==========================================
+from api import api_bp
+app.register_blueprint(api_bp)
+
+
 if __name__ == '__main__':
     logger.info("Y2A-Auto 启动中...")
 
@@ -3955,6 +4017,11 @@ if __name__ == '__main__':
         api_ready, api_status = youtube_monitor.reload_api_client(config)
         if api_ready:
             youtube_monitor.start_all_schedules()
+            try:
+                from modules.playlist_monitor import playlist_monitor_manager
+                playlist_monitor_manager.start()
+            except Exception as e:
+                logger.error(f"启动 Playlist 监控调度器失败: {e}")
             if api_status == 'proxy_ready':
                 logger.info("YouTube监控系统已初始化，独立代理已启用")
             else:
@@ -3974,8 +4041,18 @@ if __name__ == '__main__':
     # 设置下载内容清理定时任务
     download_cleanup_scheduler = schedule_download_cleanup()
 
+    # 解析命令行端口参数
+    import argparse
+    parser = argparse.ArgumentParser(description="Y2A-Auto Web Server")
+    parser.add_argument('-p', '--port', type=int, default=None, help="服务监听端口（默认环境变量 PORT 或 5000）")
+    parser.add_argument('positional_port', nargs='?', type=int, default=None, help="服务监听端口（位置参数，如 python app.py 5002）")
+    args, _ = parser.parse_known_args()
+
+    default_port = int(os.environ.get('PORT', 5000))
+    server_port = args.port or args.positional_port or default_port
+
     try:
-        port = int(os.environ.get('PORT', 5000))
+        port = server_port
         logger.info(f"服务启动，监听地址: http://127.0.0.1:{port}")
         # 使用标准Flask运行
         app.run(host='0.0.0.0', port=port, debug=False)

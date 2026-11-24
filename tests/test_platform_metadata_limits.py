@@ -108,10 +108,10 @@ class PlatformMetadataLimitTests(unittest.TestCase):
         ns = _load_bilibili_helpers()
 
         self.assertEqual(ns["BILIBILI_TITLE_LIMIT"], 80)
-        self.assertEqual(ns["BILIBILI_DESCRIPTION_LIMIT"], 2000)
+        self.assertEqual(ns["BILIBILI_DESCRIPTION_LIMIT"], 1000)
 
         result = ns["format_bilibili_description"]("b" * 2300)
-        self.assertEqual(len(result), 2000)
+        self.assertEqual(len(result), 1000)
         self.assertTrue(result.endswith("..."))
 
         shared_result = ns["format_bilibili_description"]("c" * 1300, max_len=1000)
@@ -121,11 +121,11 @@ class PlatformMetadataLimitTests(unittest.TestCase):
     def test_ai_output_limits_accept_bilibili_sized_metadata(self):
         apply_output_limits = _load_ai_output_limits()
 
-        title = apply_output_limits("t" * 90, "title", title_limit=80, description_limit=2000)
-        description = apply_output_limits("d" * 2300, "description", title_limit=80, description_limit=2000)
+        title = apply_output_limits("t" * 90, "title", title_limit=80, description_limit=1000)
+        description = apply_output_limits("d" * 2300, "description", title_limit=80, description_limit=1000)
 
         self.assertEqual(len(title), 80)
-        self.assertEqual(len(description), 2000)
+        self.assertEqual(len(description), 1000)
         self.assertTrue(description.endswith("..."))
 
     def test_effective_limits_follow_upload_target(self):
@@ -141,7 +141,7 @@ class PlatformMetadataLimitTests(unittest.TestCase):
         )
         self.assertEqual(
             get_effective_metadata_limits("bilibili"),
-            {"title_limit": 80, "description_limit": 2000},
+            {"title_limit": 80, "description_limit": 1000},
         )
 
 

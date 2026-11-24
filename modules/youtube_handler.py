@@ -55,6 +55,27 @@ def _is_video_output_file(filename: str) -> bool:
     name = str(filename or '')
     return name.startswith('video.') and Path(name).suffix.lower() in _VIDEO_OUTPUT_EXTENSIONS
 
+
+def is_members_only_error(error_text: Any) -> bool:
+    """判断错误信息是否表明属于 YouTube 会员专属视频 (members-only)。"""
+    if not error_text:
+        return False
+    if isinstance(error_text, dict):
+        return False
+
+    text = str(error_text).lower()
+    indicators = (
+        "members-only",
+        "members only",
+        "join this channel to get access",
+        "this video is available to this channel's members",
+        "members on level",
+        "仅限会员",
+        "会员专享",
+        "会员专属",
+    )
+    return any(ind in text for ind in indicators)
+
 # 项目根目录，使用工具函数以兼容开发环境和 PyInstaller 打包环境，并使用 realpath 解析符号链接
 _BASE_DIR = os.path.realpath(get_app_root_dir())
 
@@ -658,6 +679,9 @@ def test_video_availability(youtube_url, yt_dlp_cmd, cookies_path=None, logger=N
 
             error_text = (process.stderr or process.stdout or "").strip()
             last_error = error_text or f"格式检查返回非零状态码: {process.returncode}"
+            if is_members_only_error(last_error):
+                logger.info("测试视频可用性时检测到 members-only 视频，终止重试")
+                return False, None, last_error
             logger.warning(f"格式检查返回非零状态码: {process.returncode}")
 
             if "The page needs to be reloaded." in last_error and attempt < max_attempts:
@@ -772,8 +796,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 else:
                     logger.warning("CookieCloud同步失败: %s", sync_info)
             if not available:
-                logger.error("视频不可用或无法访问")
-                return False, "视频不可用或无法访问"
+                detailed_error = f"视频不可用或无法访问: {error_msg}" if error_msg else "视频不可用或无法访问"
+                if is_members_only_error(error_msg):
+                    logger.info("预检查检测到 members-only 视频，终止后续流程: %s", error_msg)
+                else:
+                    logger.error(detailed_error)
+                return False, detailed_error
 
         if not available and error_msg and _looks_like_youtube_bot_challenge(error_msg):
             # 对于同时存在格式/访问混合异常的场景，保留诊断日志但不阻塞后续下载重试
@@ -794,7 +822,7 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             '--retry-sleep', '3',  # 重试间隔
             '--ignore-errors',  # 忽略错误继续下载
             '--no-playlist',  # 不下载播放列表，仅下载单个视频
-            '--user-agent', _YOUTUBE_USER_AGENT,  # 设置User-Agent
+            '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://bgutil-provider:4416',
         ]
         
         # 检查是否需要使用代理
@@ -1011,6 +1039,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 # 检查是否是格式问题
                 combined_error = error_output + error_stderr
 
+                if is_members_only_error(combined_error):
+                    error_summary = _summarize_yt_dlp_error(error_output, error_stderr)
+                    error_msg = f"yt-dlp执行错误: {error_summary}"
+                    logger.info("检测到 members-only 会员专属视频，终止下载重试: %s", error_summary)
+                    return False, error_msg
+
                 if "'NoneType' object has no attribute 'lower'" in combined_error:
                     merged_file = merge_streams_with_ffmpeg(task_dir, ffmpeg_location, logger)
                     if merged_file:
@@ -1100,9 +1134,12 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                     # 最后一次尝试也失败
                     error_summary = _summarize_yt_dlp_error(error_output, error_stderr)
                     error_msg = f"yt-dlp执行错误: {error_summary}"
-                    logger.error(error_msg)
-                    logger.error(f"标准输出: {error_output}")
-                    logger.error(f"标准错误: {error_stderr}")
+                    if is_members_only_error(error_msg):
+                        logger.info("检测到 members-only 会员专属视频: %s", error_summary)
+                    else:
+                        logger.error(error_msg)
+                        logger.error(f"标准输出: {error_output}")
+                        logger.error(f"标准错误: {error_stderr}")
                     return False, error_msg
                     
             except subprocess.TimeoutExpired:
